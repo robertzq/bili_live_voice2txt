@@ -10,7 +10,7 @@ import warnings
 warnings.filterwarnings("ignore")
 
 # ================= 配置区 =================
-ROOM_ID = "1950858520"
+ROOM_ID = "24692760" #1950858520
 # 这里使用的是 MLX 格式的 Large-v3，精度满血，速度飞快
 MODEL_PATH = "mlx-community/whisper-large-v3-mlx"
 # =========================================
