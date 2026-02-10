@@ -105,3 +105,25 @@ Plaintext
 已内置 IGNORE_KEYWORDS 列表过滤常见字幕组水印，可在代码中自行添加关键词。
 
 Created with ❤️ for exploring the boundaries of Real-time AI.
+
+
+## 🛠️ Windows 环境准备 (必读)
+在运行代码前，你需要在 Windows 上配置好环境：
+
+安装 FFmpeg (Windows 必坑点)
+
+下载 FFmpeg (gyan.dev 等源)。
+
+解压，将 bin 文件夹的路径（例如 C:\ffmpeg\bin）添加到系统的 环境变量 Path 中。
+
+测试：打开 CMD 输入 ffmpeg -version，能看到版本号才算成功。
+
+安装 CUDA 版 PyTorch (关键)
+不要直接 pip install torch（那样会装成 CPU 版）。去 PyTorch 官网 复制安装命令，或者直接用下面这个（适配 CUDA 11.8/12.x）：
+
+Bash
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+安装核心库
+
+Bash
+pip install faster-whisper streamlink numpy
