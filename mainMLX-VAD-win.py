@@ -1,6 +1,8 @@
 import subprocess
 import time
 import sys
+import json
+import os # 可选，用于检查文件是否存在
 import numpy as np
 import threading
 import queue
@@ -11,7 +13,7 @@ from faster_whisper import WhisperModel  # 👈 替换了 mlx_whisper
 warnings.filterwarnings("ignore")
 
 # ================= 配置区 =================
-ROOM_ID = "24692760" 
+#ROOM_ID = "24692760" 
 # Windows 上模型会自动下载到 C:\Users\你的用户名\.cache\huggingface...
 MODEL_SIZE = "large-v3" 
 # =========================================
@@ -97,11 +99,45 @@ def check_voice_activity(audio_np, model):
     total_speech_time = sum([(i['end'] - i['start']) for i in speech_timestamps]) / 16000
     return total_speech_time > 0.5
 
+def load_config(file_path):
+    """读取 JSON 配置文件"""
+    if not os.path.exists(file_path):
+        print(f"❌ 错误: 找不到配置文件: {file_path}")
+        sys.exit(1)
+        
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+            
+        room_id = str(config.get("room_id", "")).strip()
+        name = config.get("streamer_name", "Unknown").strip()
+        
+        if not room_id:
+            print("❌ 错误: 配置文件中缺少 'room_id'")
+            sys.exit(1)
+            
+        return room_id, name
+    except json.JSONDecodeError:
+        print(f"❌ 错误: 配置文件格式不正确 (不是有效的 JSON): {file_path}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"❌ 读取配置出错: {e}")
+        sys.exit(1)
+
 def main():
-    t = threading.Thread(target=stream_producer, args=(ROOM_ID,), daemon=True)
+    if len(sys.argv) < 2:
+        print("❌ 错误: 请提供配置文件路径，例如: python main.py room.json")
+        return
+
+    # 2. 读取配置 (这里调用你刚加的 load_config)
+    config_file = sys.argv[1]
+    room_id, streamer_name = load_config(config_file)
+    print(f"✅ 读取配置成功 -> 主播: {streamer_name} | 房间号: {room_id}")
+
+    t = threading.Thread(target=stream_producer, args=(room_id,), daemon=True)
     t.start()
     
-    log_file = f"{ROOM_ID}_win_log_{int(time.time())}.txt"
+    log_file = f"{streamer_name}_{room_id}_win_mlx_log_{int(time.time())}.txt"
     last_text = ""
     
     print("🤖 [消费者] 引擎启动 (CUDA 加速中)...")

@@ -1,6 +1,8 @@
 import subprocess
 import time
 import sys
+import json
+import os # 可选，用于检查文件是否存在
 import numpy as np
 import threading
 import queue
@@ -9,8 +11,10 @@ import warnings
 import torch
 warnings.filterwarnings("ignore")
 
+#
+# 1950858520 jiojio. 24692760 1946526637 1749934708 1879296633. 6838597. 32673043 1884963175 1755260650 恋花音 24692760  xiyin 1894720970 柚晴子
 # ================= 配置区 =================
-ROOM_ID = "24692760" #1950858520 jiojio. 24692760 1946526637 1749934708 1879296633. 6838597. 32673043 1884963175 1755260650 24692760
+# ROOM_ID = "24692760" 
 # 这里使用的是 MLX 格式的 Large-v3，精度满血，速度飞快
 MODEL_PATH = "mlx-community/whisper-large-v3-mlx"
 # =========================================
@@ -77,12 +81,46 @@ def check_voice_activity(audio_np, model):
     # 阈值：至少要有 0.5 秒的人声才算数
     return total_speech_time > 0.5
 
+def load_config(file_path):
+    """读取 JSON 配置文件"""
+    if not os.path.exists(file_path):
+        print(f"❌ 错误: 找不到配置文件: {file_path}")
+        sys.exit(1)
+        
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+            
+        room_id = str(config.get("room_id", "")).strip()
+        name = config.get("streamer_name", "Unknown").strip()
+        
+        if not room_id:
+            print("❌ 错误: 配置文件中缺少 'room_id'")
+            sys.exit(1)
+            
+        return room_id, name
+    except json.JSONDecodeError:
+        print(f"❌ 错误: 配置文件格式不正确 (不是有效的 JSON): {file_path}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"❌ 读取配置出错: {e}")
+        sys.exit(1)
+
 def main():
+    if len(sys.argv) < 2:
+        print("❌ 错误: 请提供配置文件路径，例如: python main.py room.json")
+        return
+
+    # 2. 读取配置 (这里调用你刚加的 load_config)
+    config_file = sys.argv[1]
+    room_id, streamer_name = load_config(config_file)
+    print(f"✅ 读取配置成功 -> 主播: {streamer_name} | 房间号: {room_id}")
+
     print(f"🚀 [消费者] 正在加载 MLX Large-v3 模型...")
-    t = threading.Thread(target=stream_producer, args=(ROOM_ID,), daemon=True)
+    t = threading.Thread(target=stream_producer, args=(room_id,), daemon=True)
     t.start()
     
-    log_file = f"{ROOM_ID}_mlx_log_{int(time.time())}.txt"
+    log_file = f"{streamer_name}_{room_id}_mlx_log_{int(time.time())}.txt"
     last_text = ""
     
     print("🤖 [消费者] 引擎启动...")
