@@ -1,129 +1,142 @@
-# 🎙️ BiliLive-Whisper-MLX
-用魔法打败魔法：基于 Apple Silicon (MLX) 的 B站直播间实时语音转文字监控系统
+# 🎙️ BiliLive-Whisper-GUI
+用魔法打败魔法：B站直播间实时语音转文字监控系统 (GUI 版)
+
+![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)
+![Platform](https://img.shields.io/badge/Platform-macOS%20(MLX)%20|%20Windows%20(CUDA)-green.svg)
+![License](https://img.shields.io/badge/License-MIT-orange.svg)
 
 ## 📖 项目简介
-这是一个专为 Apple Silicon (M1/M2/M3/M4) 芯片优化的 Bilibili 直播间实时语音转写工具。
+这是一个专为 **Bilibili 直播间** 设计的实时语音转写工具。它利用本地强大的 AI 模型，直接监听直播流并将语音转换为文字，支持 **GUI 图形界面** 操作。
 
-利用 Apple 最新的 mlx-whisper 框架，直接调用 Mac 的神经网络引擎 (Neural Engine)，实现毫秒级的语音转文字。同时集成了 Silero VAD (语音活动检测)，能够智能过滤直播间的背景音乐（BGM）和哼唱，只抓取有效对话。
+项目分为两个版本，分别针对不同硬件进行了极致优化：
+1.  **🍎 macOS 版**：基于 **MLX** 框架，专为 Apple Silicon (M1/M2/M3/M4) 优化，调用神经网络引擎，极低功耗。
+2.  **🪟 Windows 版**：基于 **Faster-Whisper** + **CUDA**，利用 NVIDIA 显卡加速，推理速度极快。
 
-## 核心功能：
+## ✨ 核心功能
 
-⚡️ 极致性能：基于 MLX 框架，推理速度极快，几乎不占用 CPU/GPU 资源。
+* **🖥️ 图形化界面 (GUI)**：告别黑框框，通过可视化的 Tkinter 界面管理配置、启动监听、查看字幕。
+* **🎵 智能 VAD (语音活动检测)**：集成 Silero VAD，精准识别并过滤直播间的 **BGM 背景音乐** 和 **哼唱**，只转写有效对话，防止歌词幻觉。
+* **📄 JSON 配置管理**：通过 JSON 文件快速加载不同主播的房间号和配置，一键切换。
+* **👀 双重输出模式**：
+    * **GUI 界面**：清爽展示实时字幕，适合阅读。
+    * **控制台**：显示硬核监控数据（VAD 过滤状态、推理延迟 ⚡️0.xxs、详细日志）。
+* **📹 无头监听**：利用 `streamlink` 直接抓取音频流，无需打开浏览器，节省系统资源。
+* **📝 自动归档**：所有转写内容自动保存为带时间戳的 `.txt` 日志，文件名包含主播名与时间，方便回溯。
 
-🎵 智能 VAD：自动识别并过滤纯音乐/唱歌片段，防止歌词干扰（VAD版）。
+---
 
-📹 实时流监听：直接通过 streamlink 抓取直播间音频流，无需开浏览器。
+## 🛠️ 环境要求与安装
 
-📝 自动日志：所有转写内容自动保存为带时间戳的 .txt 日志，方便后续数据分析。
+请根据你的操作系统选择对应的安装步骤。
 
-## 🛠️ 环境要求
-硬件：Mac (Apple Silicon 芯片推荐)
+### 🍎 1. macOS (Apple Silicon)
+**硬件要求**：M1/M2/M3/M4 芯片 Mac。
 
-系统：macOS 13.0+
+1.  **安装 FFmpeg** (处理音频流必须)：
+    ```bash
+    brew install ffmpeg
+    ```
+2.  **安装 Python 依赖**：
+    推荐使用 Conda 环境 (Python 3.10+)：
+    ```bash
+    conda create -n live-whisper python=3.10
+    conda activate live-whisper
+    
+    # 安装 MLX 相关依赖
+    pip install mlx-whisper streamlink numpy torch
+    # 注意：这里的 torch 仅用于 VAD 模型加载，推理主要靠 MLX
+    ```
 
-Python：3.10+
+### 🪟 2. Windows (NVIDIA GPU)
+**硬件要求**：NVIDIA 显卡 (建议 RTX 3060 或以上)，已安装显卡驱动。
 
-依赖工具：需要安装 ffmpeg
+1.  **安装 FFmpeg (必坑点)**：
+    * 下载 FFmpeg (如 gyan.dev)。
+    * 解压并将 `bin` 文件夹路径 (例如 `C:\ffmpeg\bin`) 添加到系统 **环境变量 Path** 中。
+    * 测试：CMD 输入 `ffmpeg -version` 能看到版本号。
 
-1. 安装 FFmpeg (必须)
-程序需要使用 ffmpeg 处理音频流：
+2.  **安装 CUDA 版 PyTorch**：
+    * **不要**直接 `pip install torch` (那是 CPU 版)。
+    * 请运行以下命令安装 CUDA 12.1 版本 (根据你的驱动调整)：
+    ```bash
+    pip install torch torchvision torchaudio --index-url [https://download.pytorch.org/whl/cu121](https://download.pytorch.org/whl/cu121)
+    ```
 
+3.  **安装核心依赖**：
+    ```bash
+    pip install faster-whisper streamlink numpy
+    ```
+
+---
+
+## ⚙️ 配置文件说明
+
+项目使用 `.json` 文件来管理直播间信息。请在项目根目录下创建一个 json 文件（例如 `ava.json`）：
+
+```json
+{
+  "room_id": "24692760",
+  "streamer_name": "向晚Ava"
+}
+```
+## 🚀 使用指南
+启动程序
+根据你的系统运行对应的脚本：
+
+macOS 用户:
+```
 Bash
-brew install ffmpeg
-2. 安装 Python 依赖
-推荐创建一个新的 Conda 环境：
-
+python mainGUIMLX-VAD.py
+```
+Windows 用户:
+```
 Bash
-conda create -n live-whisper python=3.10
-conda activate live-whisper
+python mainGUIMLX-VAD-win.py
+```
+## 操作流程
+程序启动后，会先在控制台加载 VAD 和 Whisper 模型（需等待几秒）。
 
-# 安装核心依赖
-pip install mlx-whisper streamlink numpy torch
-(注：torch 仅用于 VAD 版本加载检测模型，MLX 版本本身不依赖 torch 推理)
+GUI 窗口弹出后，点击 "选择文件" 按钮。
 
-# 🚀 使用指南
-本项目提供了两个版本的脚本，适用于不同的场景。请根据需求选择运行。
+选择你创建的 .json 配置文件（如 ava.json）。
 
-修改目标直播间
-打开脚本文件，修改顶部的 ROOM_ID 变量：
+点击 "▶ 启动监听"。
 
-Python
-ROOM_ID = "24692760"  # 替换为你想要监听的直播间 ID
-🎯 模式 A：智能降噪版 (推荐)
-文件名： main_vad.py (对应您提供的 VAD 代码)
+## 观察效果：
 
-特点： 集成了 Silero VAD 模型。
-适用场景： 主播喜欢放 BGM、唱歌，或者环境嘈杂。VAD 会先判断“是不是人在说话”，如果是纯音乐直接跳过，极大减少乱码和幻觉。
+GUI 文本框会显示实时转写出的文字。
 
-Bash
-python main_vad.py
-⚡️ 模式 B：极速直连版
-文件名： main_fast.py (对应您提供的原始代码)
+后台控制台会打印详细的延迟数据和 VAD 过滤提示。
 
-特点： 没有任何前置过滤，所有音频直接送入 Whisper。
-适用场景： 纯聊天直播间，背景安静。此模式延迟最低，但如果主播唱歌，会尝试强行翻译歌词。
-
-Bash
-python main_fast.py
-# ⚙️ 参数调优 (进阶)
-在代码中你可以调整以下参数来获得更好的效果：
-
-chunk_seconds (切片时间):
-
-默认为 6 秒 (VAD版) 或 10 秒 (极速版)。
-
-调小：延迟更低，但长句容易被截断。
-
-调大：语义更完整，但实时性降低。
-
-MODEL_PATH:
-
-默认为 mlx-community/whisper-large-v3-mlx (精度最高)。
-
-如果需要极致速度，可换成 mlx-community/whisper-base-mlx。
-
-# 📝 输出示例
-程序运行时，控制台和生成的日志文件将显示如下格式：
-
+## 📝 输出示例
+GUI 界面 (清爽版)
+控制台/日志文件 (硬核版)
+```
 Plaintext
-[22:04:15] (⚡️0.32s) 兄弟们，今天这把我们要上分了。
-[22:04:22] (⚡️0.28s) 感谢榜一大哥送来的火箭，老板大气！
-[22:04:30] 🎵 [VAD] 检测到纯音乐/静音，跳过 Whisper...
-[22:04:36] 🎵 [VAD] 检测到纯音乐/静音，跳过 Whisper...
-[22:04:45] (⚡️0.41s) 刚才那是才艺展示哈，只要我不尴尬尴尬的就是你们。
-# ⚠️ 常见问题
-报错 NameError: name 'torch' is not defined
+🔗 [系统] 正在连接直播间: 24692760...
+🎧 [系统] 音频流已建立，开始监听...
+🎵 [VAD] 检测到纯音乐/静音，跳过 Whisper... (⚡️0.32s) 兄弟们，今天这把我们要上分了。 (⚡️0.28s) 感谢榜一大哥送来的火箭，老板大气！
+🎵 [VAD] 检测到纯音乐/静音，跳过 Whisper... (⚡️0.41s) 刚才那是才艺展示哈。
+```
+### ⚠️ 常见问题
+Q1: macOS 上点击“选择文件”后程序闪退？
 
-请确保在 main_vad.py 头部添加了 import torch。
+原因: macOS 的 Tkinter 对复杂文件后缀支持不佳。
 
-报错 ffmpeg not found
+解决: 确保代码中 filedialog 的 filetypes 设置为 *.json 而不是 *room.json。
 
-请确保终端能直接运行 ffmpeg 命令，或检查环境变量。
+Q2: Windows 上报错 ffmpeg not found？
 
-转写出现重复或幻觉 (如 "字幕 by...")
+原因: 环境变量没配好。
 
-已内置 IGNORE_KEYWORDS 列表过滤常见字幕组水印，可在代码中自行添加关键词。
+解决: 检查系统 Path 变量，或者重启电脑使环境变量生效。
 
-Created with ❤️ for exploring the boundaries of Real-time AI.
+Q3: 为什么一直是 "🎵 [VAD] 检测到纯音乐..."？
 
+原因: 主播可能没说话，或者背景音乐声音大过人声。
 
-## 🛠️ Windows 环境准备 (必读)
-在运行代码前，你需要在 Windows 上配置好环境：
+解决: 这是正常现象，VAD 正在帮你过滤无效信息，节省计算资源。
 
-安装 FFmpeg (Windows 必坑点)
+Q4: 出现重复字幕或幻觉 (如 "字幕 by...")？
 
-下载 FFmpeg (gyan.dev 等源)。
-
-解压，将 bin 文件夹的路径（例如 C:\ffmpeg\bin）添加到系统的 环境变量 Path 中。
-
-测试：打开 CMD 输入 ffmpeg -version，能看到版本号才算成功。
-
-安装 CUDA 版 PyTorch (关键)
-不要直接 pip install torch（那样会装成 CPU 版）。去 PyTorch 官网 复制安装命令，或者直接用下面这个（适配 CUDA 11.8/12.x）：
-
-Bash
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-安装核心库
-
-Bash
-pip install faster-whisper streamlink numpy
+解决: 代码中已内置 IGNORE_KEYWORDS 列表，你可以自行在代码顶部添加需要过滤的关键词。
