@@ -40,12 +40,16 @@ vad_model, utils = torch.hub.load(repo_or_dir='snakers4/silero-vad',
 print("✅ VAD 模型加载完毕")
 
 def check_voice_activity(audio_np):
-    audio_tensor = torch.from_numpy(audio_np)
-    speech_timestamps = get_speech_timestamps(audio_tensor, vad_model, sampling_rate=16000)
-    if not speech_timestamps:
+    try:
+        audio_tensor = torch.from_numpy(audio_np)
+        speech_timestamps = get_speech_timestamps(audio_tensor, vad_model, sampling_rate=16000)
+        if not speech_timestamps:
+            return False
+        total_speech_time = sum([(i['end'] - i['start']) for i in speech_timestamps]) / 16000
+        return total_speech_time > 0.5
+    except Exception as e:
+        print(f"❌ VAD Error: {e}")
         return False
-    total_speech_time = sum([(i['end'] - i['start']) for i in speech_timestamps]) / 16000
-    return total_speech_time > 0.5
 
 def is_hallucination(text):
     for kw in IGNORE_KEYWORDS:
@@ -64,20 +68,26 @@ def run_stream_producer(room_id):
     process_ffmpeg = None
     
     try:
-        ui_queue.put(f"🔗 [系统] 正在连接直播间: {room_id}...")
+        # === 双重输出 ===
+        msg_conn = f"🔗 [系统] 正在连接直播间: {room_id}..."
+        ui_queue.put(msg_conn)
+        print(msg_conn)
+        
         process_streamlink = subprocess.Popen(streamlink_cmd, stdout=subprocess.PIPE)
         process_ffmpeg = subprocess.Popen(ffmpeg_cmd, stdin=process_streamlink.stdout, stdout=subprocess.PIPE)
         
-        ui_queue.put("🎧 [系统] 音频流已建立，开始监听...")
+        msg_ok = "🎧 [系统] 音频流已建立，开始监听..."
+        ui_queue.put(msg_ok)
+        print(msg_ok)
         
         chunk_seconds = 8
         chunk_size = 16000 * 2 * chunk_seconds
         
         while running_event.is_set():
-            # 这里虽然是阻塞读，但因为在独立线程，不会卡UI
-            # 为了能及时响应停止，可以使用 select 或者非阻塞，但简单起见，利用 kill 强制结束
             in_bytes = process_ffmpeg.stdout.read(chunk_size)
             if not in_bytes: 
+                ui_queue.put("⚠️ [系统] 直播流中断")
+                print("⚠️ [系统] 直播流中断")
                 break
             
             if not running_event.is_set(): break
@@ -86,18 +96,30 @@ def run_stream_producer(room_id):
             audio_queue.put(audio_data)
             
     except Exception as e:
-        ui_queue.put(f"❌ [错误] 采集流出错: {e}")
+        err_msg = f"❌ [错误] 采集流出错: {e}"
+        ui_queue.put(err_msg)
+        print(err_msg)
     finally:
-        if process_ffmpeg: process_ffmpeg.kill()
-        if process_streamlink: process_streamlink.kill()
-        ui_queue.put("🛑 [系统] 采集流线程已退出")
+        if process_ffmpeg: 
+            try: process_ffmpeg.kill() 
+            except: pass
+        if process_streamlink: 
+            try: process_streamlink.kill() 
+            except: pass
+        
+        end_msg = "🛑 [系统] 采集流线程已退出"
+        ui_queue.put(end_msg)
+        print(end_msg)
 
 def run_transcriber(streamer_name, room_id):
     """Whisper 转写线程"""
     last_text = ""
     # 生成日志文件名
     log_filename = f"{streamer_name}_{room_id}_mlx_log_{int(time.time())}.txt"
-    ui_queue.put(f"📝 [系统] 日志将保存在: {log_filename}")
+    
+    log_msg = f"📝 [系统] 日志将保存在: {log_filename}"
+    ui_queue.put(log_msg)
+    print(log_msg)
 
     while running_event.is_set():
         try:
@@ -106,7 +128,10 @@ def run_transcriber(streamer_name, room_id):
         except queue.Empty:
             continue
 
+        # === VAD 检测与终端回显 ===
         if not check_voice_activity(audio_data):
+            # 终端打印小点，表示跳过静音
+            print(f"🎵 [VAD] 检测到纯音乐/静音，跳过 Whisper...")
             continue
             
         try:
@@ -125,21 +150,25 @@ def run_transcriber(streamer_name, room_id):
                 cost_time = time.time() - start_t
                 timestamp = time.strftime("%H:%M:%S")
                 
-                # 组装显示文本
+                # 1. 组装显示文本 (GUI 只看内容)
                 display_text = f"[{timestamp}] {text}"
-                full_log_line = f"[{timestamp}] (⚡️{cost_time:.2f}s) {text}"
-                
-                # 发送给 UI
                 ui_queue.put(display_text)
                 
-                # 写文件
+                # 2. 组装终端/日志文本 (带耗时信息)
+                # 先换行，把之前的 VAD 点点断开
+                full_log_line = f"[{timestamp}] (⚡️{cost_time:.2f}s) {text}"
+                print(full_log_line)
+                
+                # 3. 写文件
                 with open(log_filename, "a", encoding="utf-8") as f:
-                    f.write(full_log_line + "\n")
+                    f.write(full_log_line.strip() + "\n")
                 
                 last_text = text
                 
         except Exception as e:
-            ui_queue.put(f"❌ [错误] 转写出错: {e}")
+            err_msg = f"❌ [错误] 转写出错: {e}"
+            ui_queue.put(err_msg)
+            print(err_msg)
 
 # ================= GUI 主类 =================
 
@@ -201,7 +230,9 @@ class SubtitleApp:
                 self.entry_room.insert(0, str(data.get("room_id", "")))
                 self.entry_name.delete(0, tk.END)
                 self.entry_name.insert(0, data.get("streamer_name", ""))
-                self.log_to_ui(f"✅ 已加载配置文件: {path}", "sys")
+                msg = f"✅ 已加载配置文件: {path}"
+                self.log_to_ui(msg, "sys")
+                print(msg)
         except Exception as e:
             messagebox.showerror("错误", f"解析失败: {e}")
 
@@ -217,7 +248,7 @@ class SubtitleApp:
             msg = ui_queue.get()
             if "❌" in msg:
                 self.log_to_ui(msg, "err")
-            elif "🔗" in msg or "🎧" in msg or "🛑" in msg or "📝" in msg or "✅" in msg:
+            elif "🔗" in msg or "🎧" in msg or "🛑" in msg or "📝" in msg or "✅" in msg or "⚠️" in msg:
                 self.log_to_ui(msg, "sys")
             else:
                 self.log_to_ui(msg) # 普通字幕
@@ -239,6 +270,7 @@ class SubtitleApp:
         self.btn_start.config(state="disabled")
         self.btn_stop.config(state="normal")
         self.log_to_ui("🚀 引擎启动...", "sys")
+        print("🚀 [GUI] 用户点击了启动")
         
         # 启动生产者线程
         t_prod = threading.Thread(target=run_stream_producer, args=(room_id,), daemon=True)
@@ -253,6 +285,7 @@ class SubtitleApp:
             return
             
         self.log_to_ui("⏳ 正在停止...", "sys")
+        print("⏳ [GUI] 用户点击了停止")
         running_event.clear() # 通知所有线程停止
         
         # 清空音频队列，防止阻塞
@@ -265,4 +298,11 @@ class SubtitleApp:
 if __name__ == "__main__":
     root = tk.Tk()
     app = SubtitleApp(root)
+    # 捕获关闭窗口事件，强制退出
+    def on_closing():
+        running_event.clear()
+        root.destroy()
+        sys.exit(0)
+    root.protocol("WM_DELETE_WINDOW", on_closing)
+    
     root.mainloop()

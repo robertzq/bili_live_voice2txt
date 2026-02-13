@@ -81,14 +81,13 @@ def check_voice_activity(audio_np):
         total_speech_time = sum([(i['end'] - i['start']) for i in speech_timestamps]) / 16000
         return total_speech_time > 0.5
     except Exception as e:
-        ui_queue.put(f"❌ VAD检测出错: {e}")
+        print(f"❌ VAD检测出错: {e}")
         return False
 
 # ================= 线程任务 =================
 
 def run_stream_producer(room_id):
     """ 音频采集线程 (FFmpeg) """
-    # Windows 下有时候找不到命令，建议确保 ffmpeg 在环境变量中
     streamlink_cmd = ["streamlink", "--twitch-disable-ads", f"https://live.bilibili.com/{room_id}", "best", "--stdout"]
     ffmpeg_cmd = ["ffmpeg", "-i", "pipe:0", "-vn", "-ac", "1", "-ar", "16000", "-f", "s16le", "-loglevel", "quiet", "-"]
     
@@ -96,10 +95,12 @@ def run_stream_producer(room_id):
     process_ffmpeg = None
     
     try:
-        ui_queue.put(f"🔗 [系统] 正在连接直播间: {room_id} ...")
+        # === 双重输出：GUI + 控制台 ===
+        msg = f"🔗 [系统] 正在连接直播间: {room_id} ..."
+        ui_queue.put(msg)
+        print(msg) 
         
-        # creationflags=subprocess.CREATE_NO_WINDOW 可以隐藏弹出的黑框 (仅限 Windows)
-        # 如果你希望看到黑框调试，可以去掉 creationflags
+        # Windows 下隐藏黑框
         creation_flags = 0
         if sys.platform == "win32":
             creation_flags = subprocess.CREATE_NO_WINDOW
@@ -107,7 +108,9 @@ def run_stream_producer(room_id):
         process_streamlink = subprocess.Popen(streamlink_cmd, stdout=subprocess.PIPE, creationflags=creation_flags)
         process_ffmpeg = subprocess.Popen(ffmpeg_cmd, stdin=process_streamlink.stdout, stdout=subprocess.PIPE, creationflags=creation_flags)
         
-        ui_queue.put("🎧 [系统] 直播流已接通，开始监听...")
+        msg_ok = "🎧 [系统] 直播流已接通，开始监听..."
+        ui_queue.put(msg_ok)
+        print(msg_ok)
         
         chunk_seconds = 8 
         chunk_size = 16000 * 2 * chunk_seconds
@@ -117,43 +120,51 @@ def run_stream_producer(room_id):
             in_bytes = process_ffmpeg.stdout.read(chunk_size)
             if not in_bytes: 
                 ui_queue.put("⚠️ [系统] 直播流数据中断")
+                print("⚠️ [系统] 直播流数据中断")
                 break
             
-            # 再次检查是否被停止，避免多发数据
-            if not running_event.is_set():
-                break
+            if not running_event.is_set(): break
 
             audio_data = np.frombuffer(in_bytes, np.int16).flatten().astype(np.float32) / 32768.0
             audio_queue.put(audio_data)
             
     except Exception as e:
-        ui_queue.put(f"❌ [错误] 采集流异常: {e}")
+        err_msg = f"❌ [错误] 采集流异常: {e}"
+        ui_queue.put(err_msg)
+        print(err_msg)
     finally:
-        # 强制清理进程
         if process_ffmpeg: 
             try: process_ffmpeg.kill() 
             except: pass
         if process_streamlink: 
             try: process_streamlink.kill() 
             except: pass
-        ui_queue.put("🛑 [系统] 采集线程已退出")
+        
+        end_msg = "🛑 [系统] 采集线程已退出"
+        ui_queue.put(end_msg)
+        print(end_msg)
 
 def run_transcriber(streamer_name, room_id):
     """ Whisper 转写线程 """
     last_text = ""
     log_file = f"{streamer_name}_{room_id}_win_cuda_log_{int(time.time())}.txt"
-    ui_queue.put(f"📝 [系统] 日志将写入: {log_file}")
+    
+    log_msg = f"📝 [系统] 日志将写入: {log_file}"
+    ui_queue.put(log_msg)
+    print(log_msg)
 
     while running_event.is_set():
         try:
-            # 1秒超时，以便响应停止信号
+            # 1秒超时
             audio_data = audio_queue.get(timeout=1)
         except queue.Empty:
             continue
             
-        # VAD 检查
+        # === VAD 检测与控制台输出 ===
         if not check_voice_activity(audio_data):
-            # ui_queue.put("🎵 静音跳过") # 调试用，平时可以注释
+            # 在控制台打印一个小点，表示正在运行但跳过了静音
+            # 这样既不会刷屏，又能知道它活着
+            print(f"🎵 [VAD] 检测到纯音乐/静音，跳过 Whisper...")
             continue
             
         try:
@@ -164,31 +175,36 @@ def run_transcriber(streamer_name, room_id):
                 audio_data, 
                 beam_size=5, 
                 language="zh",
-                vad_filter=False, # 我们已经自己做了 VAD
+                vad_filter=False, 
                 no_speech_threshold=0.4,
                 log_prob_threshold=-0.8
             )
             
-            # 拼接文本
             text = "".join([segment.text for segment in segments]).strip()
             
             if len(text) > 1 and text != last_text and not is_hallucination(text):
                 cost_time = time.time() - start_t
                 timestamp = time.strftime("%H:%M:%S")
                 
-                # 发送给 UI
+                # 1. 发送给 UI (只显示内容，清爽)
                 display_msg = f"[{timestamp}] {text}"
                 ui_queue.put(display_msg)
                 
-                # 写入文件
-                full_log = f"[{timestamp}] (🚀{cost_time:.2f}s) {text}"
+                # 2. 发送给 控制台 (显示详细耗时，硬核)
+                # 先打印一个换行，因为前面的 VAD 输出可能是 "......" 没有换行
+                console_msg = f"[{timestamp}] (🚀{cost_time:.2f}s) {text}"
+                print(console_msg)
+                
+                # 3. 写入文件
                 with open(log_file, "a", encoding="utf-8") as f:
-                    f.write(full_log + "\n")
+                    f.write(console_msg.strip() + "\n")
                 
                 last_text = text
                 
         except Exception as e:
-            ui_queue.put(f"❌ [错误] 转写异常: {e}")
+            err_msg = f"❌ [错误] 转写异常: {e}"
+            ui_queue.put(err_msg)
+            print(err_msg)
 
 # ================= GUI 界面类 =================
 
@@ -205,7 +221,7 @@ class WinSubtitleApp:
         tk.Label(frame_top, text="配置文件:").grid(row=0, column=0, padx=5)
         self.entry_config = tk.Entry(frame_top, width=30)
         self.entry_config.grid(row=0, column=1, padx=5)
-        self.entry_config.insert(0, "ava.json") # 默认值
+        self.entry_config.insert(0, "ava.json") 
         
         tk.Button(frame_top, text="读取配置", command=self.load_config_btn).grid(row=0, column=2, padx=5)
         
@@ -231,14 +247,12 @@ class WinSubtitleApp:
         self.btn_stop.pack(side="right", padx=40, expand=True)
         
         # --- 文本显示区域 ---
-        # 微软雅黑字体在 Windows 上显示效果较好
         self.text_area = scrolledtext.ScrolledText(root, font=("Microsoft YaHei", 12), wrap="word", state="disabled")
         self.text_area.pack(expand=True, fill="both", padx=10, pady=10)
         
         self.text_area.tag_config("sys", foreground="gray", font=("Microsoft YaHei", 9))
         self.text_area.tag_config("err", foreground="red")
         
-        # 启动定时器更新UI
         self.root.after(100, self.process_ui_queue)
 
     def load_config_btn(self):
@@ -254,6 +268,7 @@ class WinSubtitleApp:
                 self.entry_name.delete(0, tk.END)
                 self.entry_name.insert(0, data.get("streamer_name", ""))
                 self.log("✅ 配置已加载", "sys")
+                print(f"✅ [GUI] 配置已加载: {data}") # 控制台也打印
         except Exception as e:
             messagebox.showerror("错误", f"JSON解析失败: {e}")
 
@@ -271,7 +286,7 @@ class WinSubtitleApp:
             elif "🔗" in msg or "🎧" in msg or "🛑" in msg or "📝" in msg or "✅" in msg or "⚠️" in msg:
                 self.log(msg, "sys")
             else:
-                self.log(msg) # 普通字幕
+                self.log(msg) 
         
         self.root.after(100, self.process_ui_queue)
 
@@ -290,8 +305,8 @@ class WinSubtitleApp:
         self.btn_start.config(state="disabled")
         self.btn_stop.config(state="normal")
         self.log("🚀 引擎启动中...", "sys")
+        print("🚀 [GUI] 用户点击了启动按钮")
         
-        # 启动线程
         t1 = threading.Thread(target=run_stream_producer, args=(room_id,), daemon=True)
         t1.start()
         
@@ -303,9 +318,9 @@ class WinSubtitleApp:
             return
         
         self.log("⏳ 正在断开连接...", "sys")
+        print("⏳ [GUI] 用户点击了停止按钮")
         running_event.clear()
         
-        # 清空队列
         with audio_queue.mutex:
             audio_queue.queue.clear()
             
@@ -313,10 +328,8 @@ class WinSubtitleApp:
         self.btn_stop.config(state="disabled")
 
 if __name__ == "__main__":
-    # 创建窗口
     root = tk.Tk()
     app = WinSubtitleApp(root)
-    # 窗口关闭时强制退出，防止线程残留
     def on_closing():
         running_event.clear()
         root.destroy()
