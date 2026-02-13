@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import scrolledtext, messagebox
+from tkinter import scrolledtext, messagebox, filedialog
 import subprocess
 import time
 import sys
@@ -223,7 +223,7 @@ class WinSubtitleApp:
         self.entry_config.grid(row=0, column=1, padx=5)
         self.entry_config.insert(0, "ava.json") 
         
-        tk.Button(frame_top, text="读取配置", command=self.load_config_btn).grid(row=0, column=2, padx=5)
+        tk.Button(frame_top, text="选择文件", command=self.load_config_btn).grid(row=0, column=2, padx=5)
         
         frame_inputs = tk.Frame(root, pady=5)
         frame_inputs.pack(fill="x")
@@ -256,9 +256,23 @@ class WinSubtitleApp:
         self.root.after(100, self.process_ui_queue)
 
     def load_config_btn(self):
-        path = self.entry_config.get()
+        # 1. 弹出文件选择框
+        path = filedialog.askopenfilename(
+            title="选择配置文件",
+            filetypes=[("JSON Files", "*.json"), ("All Files", "*")]
+        )
+        
+        # 2. 如果用户取消了选择，直接返回
+        if not path:
+            return
+
+        # 3. 把选中的路径填入输入框（方便你查看）
+        self.entry_config.delete(0, tk.END)
+        self.entry_config.insert(0, path)
+
+        # 4. 开始读取逻辑 (这部分和原来一样)
         if not os.path.exists(path):
-            messagebox.showerror("错误", f"文件不存在: {path}")
+            messagebox.showerror("错误", f"找不到文件: {path}")
             return
         try:
             with open(path, 'r', encoding='utf-8') as f:
@@ -267,10 +281,12 @@ class WinSubtitleApp:
                 self.entry_room.insert(0, str(data.get("room_id", "")))
                 self.entry_name.delete(0, tk.END)
                 self.entry_name.insert(0, data.get("streamer_name", ""))
-                self.log("✅ 配置已加载", "sys")
-                print(f"✅ [GUI] 配置已加载: {data}") # 控制台也打印
+                
+                msg = f"✅ 已加载配置文件: {path}"
+                self.log_to_ui(msg, "sys")
+                print(msg)
         except Exception as e:
-            messagebox.showerror("错误", f"JSON解析失败: {e}")
+            messagebox.showerror("错误", f"解析失败: {e}")
 
     def log(self, msg, tag=None):
         self.text_area.config(state="normal")

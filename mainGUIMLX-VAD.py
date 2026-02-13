@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import scrolledtext, messagebox
+from tkinter import scrolledtext, messagebox, filedialog
 import subprocess
 import time
 import sys
@@ -187,7 +187,7 @@ class SubtitleApp:
         self.entry_config.grid(row=0, column=1, padx=5)
         self.entry_config.insert(0, "ava.json") # 默认值
         
-        tk.Button(config_frame, text="加载配置", command=self.load_config_btn).grid(row=0, column=2, padx=5)
+        tk.Button(config_frame, text="选择文件", command=self.load_config_btn).grid(row=0, column=2, padx=5)
         
         tk.Label(config_frame, text="房间号:").grid(row=1, column=0, padx=5, pady=5)
         self.entry_room = tk.Entry(config_frame, width=20)
@@ -219,7 +219,21 @@ class SubtitleApp:
         self.root.after(100, self.process_ui_queue)
 
     def load_config_btn(self):
-        path = self.entry_config.get()
+        # 1. 弹出文件选择框
+        path = filedialog.askopenfilename(
+            title="选择配置文件",
+            filetypes=[("JSON Files", "*.json"), ("All Files", "*")]
+        )
+        
+        # 2. 如果用户取消了选择，直接返回
+        if not path:
+            return
+
+        # 3. 把选中的路径填入输入框（方便你查看）
+        self.entry_config.delete(0, tk.END)
+        self.entry_config.insert(0, path)
+
+        # 4. 开始读取逻辑 (这部分和原来一样)
         if not os.path.exists(path):
             messagebox.showerror("错误", f"找不到文件: {path}")
             return
@@ -230,6 +244,7 @@ class SubtitleApp:
                 self.entry_room.insert(0, str(data.get("room_id", "")))
                 self.entry_name.delete(0, tk.END)
                 self.entry_name.insert(0, data.get("streamer_name", ""))
+                
                 msg = f"✅ 已加载配置文件: {path}"
                 self.log_to_ui(msg, "sys")
                 print(msg)
