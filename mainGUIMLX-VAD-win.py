@@ -56,7 +56,7 @@ except Exception as e:
 print(f"🚀 正在加载 Faster-Whisper ({MODEL_SIZE})...")
 try:
     # compute_type="float16" 是 N 卡甜点精度
-    whisper_model = WhisperModel(MODEL_SIZE, device=DEVICE, compute_type="float16")
+    whisper_model = WhisperModel(MODEL_SIZE, device=DEVICE, compute_type="int8_float16")
     print("✅ Whisper 模型加载完毕")
 except Exception as e:
     print(f"❌ Whisper 模型加载失败: {e}")
@@ -254,6 +254,12 @@ class WinSubtitleApp:
         self.text_area.tag_config("err", foreground="red")
         
         self.root.after(100, self.process_ui_queue)
+
+    def log_to_ui(self, message, tag=None):
+        self.text_area.config(state="normal")
+        self.text_area.insert(tk.END, message + "\n", tag)
+        self.text_area.see(tk.END) # 自动滚动到底部
+        self.text_area.config(state="disabled")
 
     def load_config_btn(self):
         # 1. 弹出文件选择框
