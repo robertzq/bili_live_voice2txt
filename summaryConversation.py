@@ -7,9 +7,9 @@ os.environ['no_proxy'] = 'localhost,127.0.0.1'
 if "http_proxy" in os.environ: del os.environ["http_proxy"]
 if "https_proxy" in os.environ: del os.environ["https_proxy"]
 
-# 配置。qwen2.5-coder:32b
-MODEL = "deepseek-r1:32b" # 建议确保你已经用 ollama pull 下好了
-FILE_PATH = "柚锖子_1894720970_mlx_log_1772086946.txt" # 替换为你的真实文件名
+# 配置。qwen2.5-coder:32b. qwen3-coder:30b. deepseek-r1:32b
+MODEL = "qwen3-coder:30b" # 建议确保你已经用 ollama pull 下好了
+FILE_PATH = "柚锖子_1894720970_mlx_log_1772164506.txt" # 替换为你的真实文件名
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
 
 try:
@@ -28,7 +28,6 @@ prompt = f"""
 3. **关键人物画像**：除了主播，提到了哪些重要的粉丝或观众（如“绝命山主”、“妙笔生花”），他们说了什么重要的话？
 4. **情感曲线**：主播今天的情绪状态如何？（比如：疲惫、兴奋、还是在画饼？）
 5. **硬核细节**：不要说“提到了一些敏感问题”，要写出“关于文件共享，主播具体是怎么澄清的，设置了哪些敏感词”。
-6. **关于“度蜜月”**：这是重大新闻，请详细提取主播提到的地点、时间、以及对直播频率的影响。
 
 ### 待分析文本：
 {content}
