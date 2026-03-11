@@ -1,10 +1,13 @@
+import os
+# 解决多个库同时调用 OpenMP 导致的 DLL 冲突闪退问题
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import tkinter as tk
 from tkinter import scrolledtext, messagebox, filedialog
 import subprocess
 import time
 import sys
 import json
-import os
+
 import numpy as np
 import threading
 import queue
@@ -19,7 +22,7 @@ warnings.filterwarnings("ignore")
 MODEL_SIZE = "large-v3" 
 # 过滤词
 IGNORE_KEYWORDS = [
-    "by bwd6", "字幕by", "Amara.org", "优优独播剧场", "compared compared", "中文字幕志愿者",
+    "by bwd6", "字幕by", "Amara.org", "优优独播剧场", "compared compared",
     "YoYo Television", "不吝点赞", "订阅我的频道", "Copyright", "The following content"
 ]
 
@@ -27,6 +30,10 @@ IGNORE_KEYWORDS = [
 audio_queue = queue.Queue()
 ui_queue = queue.Queue()       # 子线程给主界面发消息
 running_event = threading.Event() # 控制开始/停止
+
+# === 新增：用于切片功能的全局变量 ===
+current_record_file = ""
+record_start_time = 0.0
 
 # ================= 模型初始化 (启动时加载) =================
 
@@ -87,18 +94,35 @@ def check_voice_activity(audio_np):
 # ================= 线程任务 =================
 
 def run_stream_producer(room_id):
-    """ 音频采集线程 (FFmpeg) """
+    """ 音频采集与视频录制线程 (FFmpeg) """
+    global current_record_file, record_start_time
+    
+    # 动态生成本次录播的文件名 (MKV格式)
+    record_filename = f"live_record_{room_id}_{int(time.time())}.mkv"
+    current_record_file = record_filename
+    record_start_time = time.time()
+    
     streamlink_cmd = ["streamlink", "--twitch-disable-ads", f"https://live.bilibili.com/{room_id}", "best", "--stdout"]
-    ffmpeg_cmd = ["ffmpeg", "-i", "pipe:0", "-vn", "-ac", "1", "-ar", "16000", "-f", "s16le", "-loglevel", "quiet", "-"]
+    
+    # === FFmpeg 双重输出魔法 ===
+    ffmpeg_cmd = [
+        "ffmpeg", 
+        "-i", "pipe:0", 
+        "-c", "copy", record_filename,  # 第一路：录像输出
+        "-map", "0:a:0", "-vn", "-ac", "1", "-ar", "16000", "-f", "s16le", "-loglevel", "quiet", "-" # 第二路：音频流
+    ]
     
     process_streamlink = None
     process_ffmpeg = None
     
     try:
-        # === 双重输出：GUI + 控制台 ===
         msg = f"🔗 [系统] 正在连接直播间: {room_id} ..."
         ui_queue.put(msg)
         print(msg) 
+        
+        msg_rec = f"📼 [系统] 视频后台直录中: {record_filename}"
+        ui_queue.put(msg_rec)
+        print(msg_rec)
         
         # Windows 下隐藏黑框
         creation_flags = 0
@@ -108,7 +132,7 @@ def run_stream_producer(room_id):
         process_streamlink = subprocess.Popen(streamlink_cmd, stdout=subprocess.PIPE, creationflags=creation_flags)
         process_ffmpeg = subprocess.Popen(ffmpeg_cmd, stdin=process_streamlink.stdout, stdout=subprocess.PIPE, creationflags=creation_flags)
         
-        msg_ok = "🎧 [系统] 直播流已接通，开始监听..."
+        msg_ok = "🎧 [系统] 直播流已接通，录像与监听开始..."
         ui_queue.put(msg_ok)
         print(msg_ok)
         
@@ -140,9 +164,44 @@ def run_stream_producer(room_id):
             try: process_streamlink.kill() 
             except: pass
         
-        end_msg = "🛑 [系统] 采集线程已退出"
+        end_msg = "🛑 [系统] 采集与录制线程已退出"
         ui_queue.put(end_msg)
         print(end_msg)
+
+def make_clip(trigger_time, streamer_name):
+    """执行后台切片的独立函数 (Windows 防黑框版)"""
+    global current_record_file, record_start_time
+    
+    if not current_record_file or not os.path.exists(current_record_file):
+        return
+        
+    # 1. 计算相对时间
+    current_video_duration = trigger_time - record_start_time
+    start_sec = max(0, current_video_duration - 180)
+    end_sec = current_video_duration + 5 
+    
+    clip_name = f"Clip_{streamer_name}_{time.strftime('%H%M%S')}_from_{int(start_sec)}s.mkv"
+    
+    # 2. 构造命令
+    cmd = [
+        "ffmpeg", "-y", "-v", "error", 
+        "-i", current_record_file,
+        "-ss", str(start_sec),
+        "-to", str(end_sec),
+        "-c", "copy",
+        clip_name
+    ]
+    
+    msg = f"✂️ [切片触发] 已截取过去3分钟画面 -> {clip_name}"
+    ui_queue.put(msg)
+    print(msg)
+    
+    # 3. Windows 下隐藏 FFmpeg 执行时的黑框
+    creation_flags = 0
+    if sys.platform == "win32":
+        creation_flags = subprocess.CREATE_NO_WINDOW
+        
+    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=creation_flags)
 
 def run_transcriber(streamer_name, room_id):
     """ Whisper 转写线程 """
@@ -162,8 +221,6 @@ def run_transcriber(streamer_name, room_id):
             
         # === VAD 检测与控制台输出 ===
         if not check_voice_activity(audio_data):
-            # 在控制台打印一个小点，表示正在运行但跳过了静音
-            # 这样既不会刷屏，又能知道它活着
             print(f"🎵 [VAD] 检测到纯音乐/静音，跳过 Whisper...")
             continue
             
@@ -186,12 +243,16 @@ def run_transcriber(streamer_name, room_id):
                 cost_time = time.time() - start_t
                 timestamp = time.strftime("%H:%M:%S")
                 
-                # 1. 发送给 UI (只显示内容，清爽)
+                # === 新增：关键词触发器 ===
+                trigger_keywords = ["切片飞来", "切片飞莱", "贴片飞来"]
+                if any(kw in text for kw in trigger_keywords):
+                    make_clip(time.time(), streamer_name)
+                
+                # 1. 发送给 UI
                 display_msg = f"[{timestamp}] {text}"
                 ui_queue.put(display_msg)
                 
-                # 2. 发送给 控制台 (显示详细耗时，硬核)
-                # 先打印一个换行，因为前面的 VAD 输出可能是 "......" 没有换行
+                # 2. 发送给 控制台
                 console_msg = f"[{timestamp}] (🚀{cost_time:.2f}s) {text}"
                 print(console_msg)
                 
@@ -207,7 +268,7 @@ def run_transcriber(streamer_name, room_id):
             print(err_msg)
 
 # ================= GUI 界面类 =================
-
+# ... 后面的 WinSubtitleApp 类代码保持原样，没有任何修改，无需改动 ...
 class WinSubtitleApp:
     def __init__(self, root):
         self.root = root
