@@ -285,7 +285,7 @@ def run_transcriber(streamer_name, room_id):
                 timestamp = time.strftime("%H:%M:%S")
                 
                 # === 新增：关键词触发器 ===
-                trigger_keywords = ["切片飞来", "切片飞莱", "贴片飞来"]
+                trigger_keywords = ["切片飞来", "切片飞莱", "贴片飞来","切片飛來","切片飛来"]
                 if any(kw in text for kw in trigger_keywords):
                     make_clip(time.time(), streamer_name)
                 
