@@ -10,7 +10,7 @@ if "https_proxy" in os.environ: del os.environ["https_proxy"]
 
 # --- 配置区：指向全新的 llama-server ---
 MODEL = "Qwen3.5-35B-A3B" # 名字可以随便写，因为服务器只加载了这一个模型
-FILE_PATH = "柚锖子_1894720970_mlx_log_1772170784.txt" # 替换为你的真实文件名
+FILE_PATH = "柚锖子_1894720970_mlx_log_1772433660.txt" # 替换为你的真实文件名
 LLAMA_SERVER_URL = "http://127.0.0.1:8000/v1/chat/completions" # OpenAI 兼容端点
 
 try:
