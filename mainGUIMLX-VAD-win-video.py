@@ -97,19 +97,20 @@ def run_stream_producer(room_id):
     """ 音频采集与视频录制线程 (FFmpeg) """
     global current_record_file, record_start_time
     
-    # 动态生成本次录播的文件名 (MKV格式)
-    record_filename = f"live_record_{room_id}_{int(time.time())}.mkv"
+    # 🔴 关键修改 1：后缀改为 .ts
+    record_filename = f"live_record_{room_id}_{int(time.time())}.ts"
     current_record_file = record_filename
     record_start_time = time.time()
     
     streamlink_cmd = ["streamlink", "--twitch-disable-ads", f"https://live.bilibili.com/{room_id}", "best", "--stdout"]
     
-    # === FFmpeg 双重输出魔法 ===
+    # 🔴 关键修改 2：加入 -f mpegts 和 -flush_packets 1，把 quiet 改为 error 以便暴露真实报错
     ffmpeg_cmd = [
         "ffmpeg", 
+        "-v", "error",            # 显示错误信息，方便排查崩溃
         "-i", "pipe:0", 
-        "-c", "copy", record_filename,  # 第一路：录像输出
-        "-map", "0:a:0", "-vn", "-ac", "1", "-ar", "16000", "-f", "s16le", "-loglevel", "quiet", "-" # 第二路：音频流
+        "-c", "copy", "-f", "mpegts", "-flush_packets", "1", record_filename,  # 第一路：实时刷新 ts 流
+        "-map", "0:a:0", "-vn", "-ac", "1", "-ar", "16000", "-f", "s16le", "-" # 第二路：音频流
     ]
     
     process_streamlink = None
@@ -124,7 +125,6 @@ def run_stream_producer(room_id):
         ui_queue.put(msg_rec)
         print(msg_rec)
         
-        # Windows 下隐藏黑框
         creation_flags = 0
         if sys.platform == "win32":
             creation_flags = subprocess.CREATE_NO_WINDOW
@@ -140,11 +140,10 @@ def run_stream_producer(room_id):
         chunk_size = 16000 * 2 * chunk_seconds
         
         while running_event.is_set():
-            # 阻塞读取
             in_bytes = process_ffmpeg.stdout.read(chunk_size)
             if not in_bytes: 
-                ui_queue.put("⚠️ [系统] 直播流数据中断")
-                print("⚠️ [系统] 直播流数据中断")
+                ui_queue.put("⚠️ [系统] 直播流数据中断 (FFmpeg可能已退出)")
+                print("⚠️ [系统] 直播流数据中断 (FFmpeg可能已退出)")
                 break
             
             if not running_event.is_set(): break
@@ -164,44 +163,86 @@ def run_stream_producer(room_id):
             try: process_streamlink.kill() 
             except: pass
         
-        end_msg = "🛑 [系统] 采集与录制线程已退出"
+        # === 新增：录像结束后自动将 .ts 无损封装为 .mp4 ===
+        if os.path.exists(record_filename):
+            mp4_filename = record_filename.replace(".ts", ".mp4")
+            convert_msg = f"🔄 [系统] 录制结束，正在将 .ts 无损封装为 .mp4..."
+            ui_queue.put(convert_msg)
+            print(convert_msg)
+            
+            # 执行极速转封装
+            convert_cmd = [
+                "ffmpeg", "-y", "-v", "error",
+                "-i", record_filename,
+                "-c", "copy",
+                "-movflags", "faststart",
+                mp4_filename
+            ]
+            
+            try:
+                subprocess.run(convert_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=creation_flags)
+                
+                # 转换成功后，可以选择删除原 .ts 文件（如果想保留可以把下面两行注释掉）
+                os.remove(record_filename) 
+                
+                finish_msg = f"✅ [系统] 视频已成功保存为: {mp4_filename}"
+                ui_queue.put(finish_msg)
+                print(finish_msg)
+            except Exception as e:
+                err_msg = f"❌ [错误] 格式转换失败: {e}"
+                ui_queue.put(err_msg)
+                print(err_msg)
+        
+        end_msg = "🛑 [系统] 采集与录制线程已彻底退出"
         ui_queue.put(end_msg)
         print(end_msg)
 
 def make_clip(trigger_time, streamer_name):
-    """执行后台切片的独立函数 (Windows 防黑框版)"""
+    """执行后台切片的独立函数 (Windows 防黑框 + MP4 moov头前置)"""
     global current_record_file, record_start_time
     
+    # 确保主录像文件存在
     if not current_record_file or not os.path.exists(current_record_file):
+        msg = "⚠️ [切片失败] 找不到当前录像文件"
+        ui_queue.put(msg)
+        print(msg)
         return
         
     # 1. 计算相对时间
     current_video_duration = trigger_time - record_start_time
-    start_sec = max(0, current_video_duration - 180)
-    end_sec = current_video_duration + 5 
+    start_sec = max(0, current_video_duration - 180)  # 往前推 3 分钟 (180秒)
+    end_sec = current_video_duration + 5              # 往后多留 5 秒作为缓冲
     
-    clip_name = f"Clip_{streamer_name}_{time.strftime('%H%M%S')}_from_{int(start_sec)}s.mkv"
+    # 2. 构造输出文件名 (.mp4 格式)
+    clip_name = f"Clip_{streamer_name}_{time.strftime('%H%M%S')}_from_{int(start_sec)}s.mp4"
     
-    # 2. 构造命令
+    # 3. 构造 FFmpeg 命令
     cmd = [
         "ffmpeg", "-y", "-v", "error", 
-        "-i", current_record_file,
-        "-ss", str(start_sec),
-        "-to", str(end_sec),
-        "-c", "copy",
+        "-i", current_record_file,          # 输入源：正在录制的 .ts 文件
+        "-ss", str(start_sec),              # 起始时间
+        "-to", str(end_sec),                # 结束时间
+        "-c", "copy",                       # 复制音视频流，不重新编码 (速度极快)
+        "-movflags", "faststart",           # 核心魔法：将 moov atom 移到文件开头，完美兼容 Mac/Web
         clip_name
     ]
     
-    msg = f"✂️ [切片触发] 已截取过去3分钟画面 -> {clip_name}"
+    msg = f"✂️ [切片触发] 已截取画面 -> {clip_name}"
     ui_queue.put(msg)
     print(msg)
     
-    # 3. Windows 下隐藏 FFmpeg 执行时的黑框
+    # 4. Windows 下隐藏 FFmpeg 执行时的命令行黑框
     creation_flags = 0
     if sys.platform == "win32":
         creation_flags = subprocess.CREATE_NO_WINDOW
         
-    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=creation_flags)
+    # 5. 启动后台进程执行切片，不阻塞主线程
+    subprocess.Popen(
+        cmd, 
+        stdout=subprocess.DEVNULL, 
+        stderr=subprocess.DEVNULL, 
+        creationflags=creation_flags
+    )
 
 def run_transcriber(streamer_name, room_id):
     """ Whisper 转写线程 """
