@@ -29,6 +29,8 @@ audio_queue = queue.Queue()
 ui_queue = queue.Queue() # 用于子线程给 GUI 发消息
 running_event = threading.Event() # 用于控制线程启停
 
+current_record_file = ""
+record_start_time = 0.0
 # ================= VAD 与 核心逻辑 =================
 
 print("🛠 正在加载 VAD 模型 (GUI启动中)...")
@@ -61,9 +63,11 @@ def is_hallucination(text):
 
 def run_stream_producer(room_id):
     """音频采集与视频静默录制线程"""
+    global current_record_file, record_start_time
     # 动态生成本次录播的文件名
     record_filename = f"live_record_{room_id}_{int(time.time())}.mkv"
-    
+    current_record_file = record_filename
+    record_start_time = time.time()
     streamlink_cmd = ["streamlink", "--twitch-disable-ads", f"https://live.bilibili.com/{room_id}", "best", "--stdout"]
     
     # === 核心修改区 ===
@@ -128,6 +132,40 @@ def run_stream_producer(room_id):
         ui_queue.put(end_msg)
         print(end_msg)
 
+def make_clip(trigger_time, streamer_name):
+    """执行后台切片的独立函数"""
+    global current_record_file, record_start_time
+    
+    if not current_record_file or not os.path.exists(current_record_file):
+        return
+        
+    # 1. 计算当前触发点在视频中的相对时间（秒）
+    current_video_duration = trigger_time - record_start_time
+    
+    # 2. 往前推 3 分钟 (180秒)
+    start_sec = max(0, current_video_duration - 180)
+    # 往后多切 5 秒，确保把“切片飞来”这句话的尾音和画面也收录进去
+    end_sec = current_video_duration + 5 
+    
+    clip_name = f"Clip_{streamer_name}_{time.strftime('%H%M%S')}_from_{int(start_sec)}s.mkv"
+    
+    # 3. 构造 FFmpeg 切片命令 (无损秒切)
+    cmd = [
+        "ffmpeg", "-y", "-v", "error", 
+        "-i", current_record_file,
+        "-ss", str(start_sec),
+        "-to", str(end_sec),
+        "-c", "copy",
+        clip_name
+    ]
+    
+    msg = f"✂️ [切片触发] 已截取过去3分钟画面 -> {clip_name}"
+    ui_queue.put(msg)
+    print(msg)
+    
+    # 4. 扔到后台执行，不阻塞主程序
+    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
 def run_transcriber(streamer_name, room_id):
     """Whisper 转写线程"""
     last_text = ""
@@ -166,6 +204,14 @@ def run_transcriber(streamer_name, room_id):
             if len(text) > 1 and text != last_text and not is_hallucination(text):
                 cost_time = time.time() - start_t
                 timestamp = time.strftime("%H:%M:%S")
+                
+                # === 新增：关键词触发器 ===
+                # 这里可以设置多个关键词容错，因为 STT 可能会识别成同音字
+                trigger_keywords = ["切片飞来", "切片飞莱", "贴片飞来"]
+                if any(kw in text for kw in trigger_keywords):
+                    make_clip(time.time(), streamer_name)
+                
+                last_text = text
                 
                 # 1. 组装显示文本 (GUI 只看内容)
                 display_text = f"[{timestamp}] {text}"
