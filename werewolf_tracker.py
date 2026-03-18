@@ -29,21 +29,24 @@ class WerewolfEngine:
         # 核心：关系图谱池。记录 (发起者, 目标, 动作类型)
         self.relations = []
         
-        # 预编译正则语法糖 (扩展了夜间死亡 xn)
+        # ================= 终极语法糖字典 =================
         self.rules = {
             "claim": re.compile(r"^(\d+)=([a-zA-Z]+)$"),     
-            "good": re.compile(r"^(\d+)\+(\d+)$"),           
-            "bad": re.compile(r"^(\d+)\-(\d+)$"),            
-            "vote": re.compile(r"^([\d,]+)>(\d+)$"),         
-            "dead": re.compile(r"^(\d+)x([nN]?)$"),          # 兼容 6x 和 6xn
-            "confirm": re.compile(r"^(\d+)!([a-zA-Z]+)$")    
+            "good": re.compile(r"^(\d+)\+(\d+)$"),           # 铁金水
+            "bad": re.compile(r"^(\d+)\-(\d+)$"),            # 铁查杀
+            "vouch": re.compile(r"^(\d+)\*(\d+)$"),          # 软保人
+            "suspect": re.compile(r"^(\d+)\~(\d+)$"),        # 软怀疑
+            "silver": re.compile(r"^(\d+)\@(\d+)$"),         # 银水
+            "vote": re.compile(r"^([\d,]+)>(\d+)$"),         # 投票
+            "dead": re.compile(r"^(\d+)x([nN]?)$"),          # 死亡
+            "confirm": re.compile(r"^(\d+)!([a-zA-Z]+)$")    # 确认底牌
         }
 
     def add_log(self, ui_text, raw_text):
         self.logs.append(ui_text)
         self.raw_logs.append(raw_text)
 
-    # ================= 全新：图谱推演引擎 =================
+    # ================= 图谱推演引擎 (权重大修版) =================
     def _apply_odds(self, player, ratio):
         """底层的赔率计算器"""
         p = player.wolf_prob / 100.0
@@ -56,31 +59,24 @@ class WerewolfEngine:
 
     def recalculate_all(self):
         """核心：信任链全局重算。支持暗牌模式与全神职动态互斥"""
-        # 1. 重置所有未亮明身份的玩家概率到基线
         for p in self.players.values():
             if p.real_role:
                 p.wolf_prob = 100.0 if p.real_role == 'W' else 0.0
             else:
                 p.wolf_prob = self.base_prob
 
-        # 2. 迭代推演 (循环3次让信任链可以顺藤摸瓜传递)
         for _ in range(3):
-            # --- [逻辑A]：全神职动态对跳互斥 (暗牌局抓狼核心) ---
-            # 自动提取场上所有声明过，且不是平民('V')的身份标签
+            # --- [逻辑A]：全神职动态对跳互斥 ---
             special_claims = set(p.claim for p in self.players.values() if p.claim and p.claim != 'V')
             
             for role in special_claims:
                 claimers = [p for p in self.players.values() if p.claim == role]
                 if len(claimers) > 1:
-                    # 发现对跳！(比如两个S，或者两个H)
                     good_claimers = [p for p in claimers if p.real_role and p.real_role != 'W']
                     if good_claimers: 
-                        # 如果其中一个已经被确认为好人，另一个直接标狼
                         for c in claimers:
                             if not c.real_role: self._apply_odds(c, 20.0)
                     else:
-                        # 暗牌模式：双方都没确认，系统给双方同时施加互斥高压！
-                        # 每轮循环放大 1.5 倍，3轮就是 3.375 倍的嫌疑增长
                         for c in claimers:
                             if not c.real_role: self._apply_odds(c, 1.5)
 
@@ -92,18 +88,42 @@ class WerewolfEngine:
                 p_src_w, p_src_g = src.wolf_prob / 100.0, 1.0 - (src.wolf_prob / 100.0)
                 p_tgt_w, p_tgt_g = tgt.wolf_prob / 100.0, 1.0 - (tgt.wolf_prob / 100.0)
 
+                # 1. 铁查杀 (极高权重)
                 if act_type == 'bad':
                     if not tgt.real_role:
-                        self._apply_odds(tgt, p_src_g * 2.0 + p_src_w * 0.5)
+                        self._apply_odds(tgt, p_src_g * 5.0 + p_src_w * 0.2)
                     if not src.real_role:
-                        self._apply_odds(src, p_tgt_g * 1.8 + p_tgt_w * 0.5)
+                        self._apply_odds(src, p_tgt_g * 5.0 + p_tgt_w * 0.5)
 
+                # 2. 铁金水 (极高权重)
                 elif act_type == 'good':
                     if not tgt.real_role:
-                        self._apply_odds(tgt, p_src_g * 0.2 + p_src_w * 2.5)
+                        self._apply_odds(tgt, p_src_g * 0.2 + p_src_w * 3.0)
                     if not src.real_role:
-                        self._apply_odds(src, p_tgt_g * 1.0 + p_tgt_w * 5.0)
+                        self._apply_odds(src, p_tgt_g * 0.8 + p_tgt_w * 5.0)
 
+                # 3. 软怀疑/踩 (温和权重)
+                elif act_type == 'suspect':
+                    if not tgt.real_role:
+                        self._apply_odds(tgt, p_src_g * 1.3 + p_src_w * 0.8)
+                    if not src.real_role:
+                        self._apply_odds(src, p_tgt_g * 1.3 + p_tgt_w * 0.8)
+
+                # 4. 软保人/站边 (抓倒钩专属权重)
+                elif act_type == 'vouch':
+                    if not tgt.real_role:
+                        self._apply_odds(tgt, p_src_g * 0.7 + p_src_w * 1.5)
+                    if not src.real_role:
+                        self._apply_odds(src, p_tgt_w * 2.5 + p_tgt_g * 0.8)
+
+                # 5. 银水防自刀
+                elif act_type == 'silver':
+                    if not tgt.real_role:
+                        self._apply_odds(tgt, p_src_g * 0.3 + p_src_w * 2.0)
+                    if not src.real_role:
+                        self._apply_odds(src, p_tgt_w * 2.5 + p_tgt_g * 0.5)
+
+                # 6. 投票连坐
                 elif act_type == 'vote':
                     if not tgt.real_role:
                         self._apply_odds(tgt, p_src_g * 1.5 + p_src_w * 0.6)
@@ -116,7 +136,7 @@ class WerewolfEngine:
         for p in self.players.values():
             if p.real_role: continue
             
-            # 【修复】：检测真正的双金水 (只有声称是 S 的人发的才算！)
+            # 检测真正的双金水 (只有声称是 S 的人发的才算)
             good_sources = [src for src, tgt, act in self.relations if act == 'good' and tgt == p.pid]
             seer_sources = [src for src in good_sources if self.players[src].claim == 'S']
             
@@ -136,39 +156,32 @@ class WerewolfEngine:
         self.normalize_probabilities()
 
     def get_tactical_advice(self):
-        """基于当前局势生成实时发言建议"""
         advice = []
-        
-        # 1. 寻找核心突破口 (最高嫌疑人)
         suspects = sorted([p for p in self.players.values() if not p.real_role and not p.is_dead], 
                           key=lambda x: x.wolf_prob, reverse=True)
         
         if not suspects:
-            return "[dim]局势尚未明朗，建议先划水听一轮发言，不要盲目站边。[/]"
+            return "[dim]局势尚未明朗，建议先划水听一轮发言，多记动作。[/]"
             
         prime_suspect = suspects[0]
         
-        # 2. 针对最高嫌疑人生成攻击话术
         if prime_suspect.wolf_prob > 70:
             attack_points = []
-            # 查图谱，看他干了什么坏事
             for (src, tgt, act) in self.relations:
                 if src == prime_suspect.pid:
                     tgt_player = self.players[tgt]
-                    if act == 'bad' and tgt_player.real_role and tgt_player.real_role != 'W':
-                        attack_points.append(f"他给铁好人{tgt}号发过查杀/死踩")
+                    if act in ['bad', 'suspect'] and tgt_player.real_role and tgt_player.real_role != 'W':
+                        attack_points.append(f"他疯狂攻击过铁好人{tgt}号")
                     elif act == 'vote' and tgt_player.real_role and tgt_player.real_role != 'W':
-                        attack_points.append(f"他在关键轮次把票挂在了铁好人{tgt}号身上")
+                        attack_points.append(f"他在关键轮次把票冲在了铁好人{tgt}号身上")
             
             if attack_points:
                 reasons = "，且".join(attack_points)
-                advice.append(f"[bold red]🔥 攻击目标锁定 {prime_suspect.pid}号！[/]")
-                advice.append(f"发言思路：强烈建议今天出 {prime_suspect.pid}号。不仅因为他状态差，更因为{reasons}。这绝对是狼人视角的行为，好人们不要被带偏，今天全票打飞 {prime_suspect.pid}！")
+                advice.append(f"[bold red]🔥 建议放逐目标锁定 {prime_suspect.pid}号！[/]")
+                advice.append(f"底层逻辑抓狼：强烈建议今天出 {prime_suspect.pid}号。因为{reasons}。这绝对是狼队视角，好人们不要分票！")
             else:
-                advice.append(f"[bold red]🔥 重点关注 {prime_suspect.pid}号。[/] 他的整体行为极度异常（狼面 {prime_suspect.wolf_prob:.1f}%），发言时可以稍微施压，听他怎么辩解。")
+                advice.append(f"[bold red]🔥 重点施压 {prime_suspect.pid}号。[/] 他的整体行为在图谱中极度异常（狼面 {prime_suspect.wolf_prob:.1f}%），听听他怎么辩解。")
                 
-        # 3. 寻找抱团冲票的线索
-        # 统计有哪些活着的人，把票投给了已知的好人
         bad_voters = set()
         for (src, tgt, act) in self.relations:
             if act == 'vote':
@@ -178,10 +191,10 @@ class WerewolfEngine:
                     bad_voters.add(str(src))
                     
         if bad_voters:
-            advice.append(f"[bold yellow]⚠️ 注意票型反噬：[/] {','.join(bad_voters)} 号玩家曾把票投给了好人。发言时可以质问他们：'你们当时为什么给好人冲票？请给出合理的逻辑，否则一律按倒钩狼处理！'")
+            advice.append(f"[bold yellow]⚠️ 注意冲票反噬：[/] {','.join(bad_voters)} 号玩家曾抱团投给过好人。发言时可以诈他们一下，一律按冲锋/倒钩处理！")
 
         if not advice:
-            return "[dim]暂无强烈逻辑爆点，建议多盘一盘已知神牌的逻辑线。[/]"
+            return "[dim]暂无压倒性的逻辑爆点，多留意那些发言软但投票凶的人。[/]"
             
         return "\n".join(advice)
     
@@ -205,7 +218,6 @@ class WerewolfEngine:
         scale_factor = (remaining_wolves * 100.0) / current_sum
         for p in unknown_players:
             p.wolf_prob = min(99.9, max(0.1, p.wolf_prob * scale_factor))
-    # ==================================================
 
     def parse_command(self, cmd):
         cmd = cmd.strip()
@@ -246,31 +258,50 @@ class WerewolfEngine:
             elif action == "good":
                 source, target = int(args[0]), int(args[1])
                 check_pid(source, target)
-                # 记录图谱关系
+                # 防呆补丁：发真金水强行转神职
+                if self.players[source].claim not in ['S', 'WI', 'H']: 
+                    self.players[source].claim = 'S'
                 self.relations.append((source, target, 'good'))
-                self.add_log(f"[green]发水:[/] {source}号 给 {target}号 发金水", f"{source}号 给 {target}号 发金水")
+                self.add_log(f"[green]铁金水:[/] {source}号 验出 {target}号 是金水", f"{source}号 验出 {target}号 是金水")
                 
             elif action == "bad":
                 source, target = int(args[0]), int(args[1])
                 check_pid(source, target)
-                # 记录图谱关系
                 self.relations.append((source, target, 'bad'))
-                self.add_log(f"[red]查杀:[/] {source}号 给 {target}号 发查杀", f"{source}号 给 {target}号 发查杀")
-                
+                self.add_log(f"[red]铁查杀:[/] {source}号 验出/死踩 {target}号 是狼", f"{source}号 验出/死踩 {target}号 是狼")
+
+            elif action == "suspect":
+                source, target = int(args[0]), int(args[1])
+                check_pid(source, target)
+                self.relations.append((source, target, 'suspect'))
+                self.add_log(f"[yellow]软怀疑:[/] {source}号 踩/怀疑 {target}号", f"{source}号 踩/怀疑 {target}号")
+
+            elif action == "vouch":
+                source, target = int(args[0]), int(args[1])
+                check_pid(source, target)
+                self.relations.append((source, target, 'vouch'))
+                self.add_log(f"[cyan]软保人:[/] {source}号 认 {target}号 是好牌/站边", f"{source}号 认 {target}号 是好牌/站边")
+
+            elif action == "silver":
+                source, target = int(args[0]), int(args[1])
+                check_pid(source, target)
+                # 防呆补丁：发银水强行转女巫
+                if self.players[source].claim not in ['S', 'WI', 'H']: 
+                    self.players[source].claim = 'WI'
+                self.relations.append((source, target, 'silver'))
+                self.add_log(f"[blue]女巫银水:[/] {source}号 救了 {target}号 (发银水)", f"{source}号 给 {target}号 发银水")
+
             elif action == "vote":
                 voters = [int(v) for v in args[0].split(',') if v.strip()]
                 target = int(args[1])
                 check_pid(target, *voters) 
-                
-                # 【新增】：将每个人投给谁，拆分成独立的图谱关系存入引擎
                 for voter in voters:
                     self.relations.append((voter, target, 'vote'))
-                    
-                self.add_log(f"[yellow]投票:[/] {voters} 投给 {target}号", f"{voters} 投给 {target}号")
+                self.add_log(f"[magenta]果断冲票:[/] {voters} 投给 {target}号", f"{voters} 投给 {target}号")
                 
             elif action == "dead":
                 pid = int(args[0])
-                is_night = bool(args[1]) # 如果输入 6xn, 这里会识别到 n
+                is_night = bool(args[1])
                 check_pid(pid)
                 self.players[pid].is_dead = True
                 self.players[pid].death_type = "xn" if is_night else "x"
@@ -281,9 +312,8 @@ class WerewolfEngine:
                 pid, role = int(args[0]), args[1].upper()
                 check_pid(pid)
                 self.players[pid].real_role = role
-                self.add_log(f"[magenta]确认:[/] {pid}号 真实身份为 {role}", f"{pid}号 真实身份为 {role}")
+                self.add_log(f"[bold magenta]底牌确认:[/] {pid}号 真实身份为 {role}", f"{pid}号 真实身份为 {role}")
             
-            # 无论发生什么有效动作，全部重新推演信任链图谱！
             self.recalculate_all()
                 
         except ValueError:
@@ -296,7 +326,7 @@ class WerewolfEngine:
 def render_dashboard(engine, console):
     os.system('cls' if os.name == 'nt' else 'clear')
     
-    title = f"🐺 狼人杀动态图谱推演终端 v3.0 - {engine.player_count}人{engine.wolf_count}狼"
+    title = f"🐺 狼人杀动态图谱推演终端 v3.5 (完全体) - {engine.player_count}人{engine.wolf_count}狼"
     table = Table(title=title, style="bold white")
     table.add_column("号码", justify="center", style="cyan")
     table.add_column("状态", justify="center")
@@ -330,14 +360,21 @@ def render_dashboard(engine, console):
         )
     
     console.print(table)
-    # === 新增：显示战术建议面板 ===
+    
     advice_text = engine.get_tactical_advice()
     console.print(Panel(advice_text, title="💡 实战发言军师 (Tactical Advice)", border_style="yellow", width=70))
-    # ==============================
     
     log_text = "\n".join(engine.logs[-8:]) if engine.logs else "暂无记录..."
     console.print(Panel(log_text, title="最新事件日志 (Event Logs)", width=70))
-    console.print("\n[bold]语法提示:[/] 1=S(预) 1=V(民) 1+2(金水) 1-3(查杀)\n           4,5>1(投票) 6x(票死) 6xn(夜里死) 7!W(确认身份) q退出")
+    
+    # === 新增：完整的操作手册面板 ===
+    syntax_help = """[bold]速记语法大全:[/]
+[cyan]身份/确认:[/] 1=S(认预) 1=V(认民) 7!W(底牌确认为狼)
+[green]硬逻辑(神职专属，高权重):[/] 1+2(真金水) 1-3(真查杀) 4@5(女巫发银水)
+[yellow]软逻辑(平民口水，低权重):[/] 1*2(软保人/站边) 1~3(软踩/丢进狼坑)
+[red]行动/出局(连坐核心):[/] 4,5>1(投票给1号) 6x(白天票死) 6xn(夜间倒牌)
+输入 [bold]q[/] 退出并保存TXT复盘日志"""
+    console.print(Panel(syntax_help, title="⌨️ 操作终端手册", border_style="cyan", width=70))
 
 def export_logs(engine, console):
     if not engine.raw_logs:
@@ -359,7 +396,7 @@ def main():
     console = Console()
     os.system('cls' if os.name == 'nt' else 'clear')
     
-    console.print("[bold cyan]🐺 欢迎使用狼人杀图谱辅助推演工具 v3.0[/]")
+    console.print("[bold cyan]🐺 欢迎使用狼人杀图谱辅助推演工具 v3.5[/]")
     p_input = console.input("请输入玩家总数 (直接回车默认9): ")
     player_count = int(p_input) if p_input.strip().isdigit() else 9
     
