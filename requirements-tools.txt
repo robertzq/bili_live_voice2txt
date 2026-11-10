@@ -1,0 +1,4 @@
+requests>=2.31
+# 会议实时翻译还需要 pyaudio：
+#   macOS: brew install portaudio && pip install pyaudio
+#   Windows: pip install pyaudio

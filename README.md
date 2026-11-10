@@ -1,142 +1,208 @@
-# 🎙️ BiliLive-Whisper-GUI
-用魔法打败魔法：B站直播间实时语音转文字监控系统 (GUI 版)
+# 🎙️ BiliLive-Whisper
 
-![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)
-![Platform](https://img.shields.io/badge/Platform-macOS%20(MLX)%20|%20Windows%20(CUDA)-green.svg)
-![License](https://img.shields.io/badge/License-MIT-orange.svg)
+B 站直播间实时语音转文字监控：本地 Whisper 转写、VAD 过滤 BGM、后台录像、关键词自动切片，并可同步监听弹幕/礼物/上舰/SC 写入 MySQL。
 
-## 📖 项目简介
-这是一个专为 **Bilibili 直播间** 设计的实时语音转写工具。它利用本地强大的 AI 模型，直接监听直播流并将语音转换为文字，支持 **GUI 图形界面** 操作。
+- **macOS**：MLX Whisper，Apple Silicon 优化
+- **Windows / Linux**：Faster-Whisper + CUDA（无 GPU 自动回退 CPU）
 
-项目分为两个版本，分别针对不同硬件进行了极致优化：
-1.  **🍎 macOS 版**：基于 **MLX** 框架，专为 Apple Silicon (M1/M2/M3/M4) 优化，调用神经网络引擎，极低功耗。
-2.  **🪟 Windows 版**：基于 **Faster-Whisper** + **CUDA**，利用 NVIDIA 显卡加速，推理速度极快。
+## 功能
 
-## ✨ 核心功能
+- 无头抓流：`streamlink` + `ffmpeg`，不需要打开浏览器
+- 智能 VAD：Silero VAD 按静音断句，过滤背景音乐与静音
+- 实时字幕 GUI + 带时间戳的日志归档
+- 后台无损录像（`.ts` 实时写入，结束后自动封装为 `.mp4`）
+- 断线自动重连
+- 说出关键词（默认「切片飞来」）自动截取前 3 分钟画面
+- 弹幕监听：弹幕、礼物、上舰、醒目留言、进场，显示到 GUI 并单独写日志
+- MySQL 入库：表结构与 `bili_live_monitor` 兼容，便于后续 SQL 分析
+- 可选：本地大模型直播复盘、会议实时英译中
 
-* **🖥️ 图形化界面 (GUI)**：告别黑框框，通过可视化的 Tkinter 界面管理配置、启动监听、查看字幕。
-* **🎵 智能 VAD (语音活动检测)**：集成 Silero VAD，精准识别并过滤直播间的 **BGM 背景音乐** 和 **哼唱**，只转写有效对话，防止歌词幻觉。
-* **📄 JSON 配置管理**：通过 JSON 文件快速加载不同主播的房间号和配置，一键切换。
-* **👀 双重输出模式**：
-    * **GUI 界面**：清爽展示实时字幕，适合阅读。
-    * **控制台**：显示硬核监控数据（VAD 过滤状态、推理延迟 ⚡️0.xxs、详细日志）。
-* **📹 无头监听**：利用 `streamlink` 直接抓取音频流，无需打开浏览器，节省系统资源。
-* **📝 自动归档**：所有转写内容自动保存为带时间戳的 `.txt` 日志，文件名包含主播名与时间，方便回溯。
+## 目录结构
 
----
+```
+bili-whisper/
+├── run.py                 # 统一入口（GUI）
+├── bililive/
+│   ├── config.py          # 路径、常量、房间配置
+│   ├── text.py            # 幻觉过滤与字幕去重
+│   ├── audio.py           # PCM 转换、VAD 动态断句
+│   ├── vad.py             # Silero VAD 封装（延迟加载）
+│   ├── backends.py        # MLX / Faster-Whisper 后端
+│   ├── capture.py         # streamlink + ffmpeg 采集与录像
+│   ├── clipper.py         # 关键词切片
+│   ├── bili_auth.py       # B 站凭证 / 扫码登录
+│   ├── danmaku.py         # 弹幕协议、事件解析、日志
+│   ├── database.py        # MySQL 连接与入库
+│   ├── pipeline.py        # 音频 + 弹幕流水线
+│   └── gui.py             # Tkinter 界面
+├── configs/               # 直播间配置
+├── records/               # 录像与切片
+├── logs/                  # 转写日志与弹幕日志
+├── sql/schema.sql         # MySQL 建表脚本
+├── .env.example           # 数据库/凭证配置模板
+├── tools/
+│   ├── meeting_translate.py  # 会议实时英译中（原 catchTranslate.py）
+│   └── summarize.py          # 直播日志复盘
+└── tests/                 # 单元测试
+```
 
-## 🛠️ 环境要求与安装
+## 安装
 
-请根据你的操作系统选择对应的安装步骤。
+### 🍎 macOS (Apple Silicon)
 
-### 🍎 1. macOS (Apple Silicon)
-**硬件要求**：M1/M2/M3/M4 芯片 Mac。
+```bash
+brew install ffmpeg streamlink
+pip install -r requirements-macos.txt
+```
 
-1.  **安装 FFmpeg** (处理音频流必须)：
-    ```bash
-    brew install ffmpeg
-    ```
-2.  **安装 Python 依赖**：
-    推荐使用 Conda 环境 (Python 3.10+)：
-    ```bash
-    conda create -n live-whisper python=3.10
-    conda activate live-whisper
-    
-    # 安装 MLX 相关依赖
-    pip install mlx-whisper streamlink numpy torch
-    # 注意：这里的 torch 仅用于 VAD 模型加载，推理主要靠 MLX
-    ```
+### 🪟 Windows
 
-### 🪟 2. Windows (NVIDIA GPU)
-**硬件要求**：NVIDIA 显卡 (建议 RTX 3060 或以上)，已安装显卡驱动。
+1. 安装 FFmpeg 并把 `bin` 目录加入 `PATH`（`ffmpeg -version` 能运行）。
+2. 安装 CUDA 版 PyTorch（按你的驱动选择版本）：
 
-1.  **安装 FFmpeg (必坑点)**：
-    * 下载 FFmpeg (如 gyan.dev)。
-    * 解压并将 `bin` 文件夹路径 (例如 `C:\ffmpeg\bin`) 添加到系统 **环境变量 Path** 中。
-    * 测试：CMD 输入 `ffmpeg -version` 能看到版本号。
+```bash
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+```
 
-2.  **安装 CUDA 版 PyTorch**：
-    * **不要**直接 `pip install torch` (那是 CPU 版)。
-    * 请运行以下命令安装 CUDA 12.1 版本 (根据你的驱动调整)：
-    ```bash
-    pip install torch torchvision torchaudio --index-url [https://download.pytorch.org/whl/cu121](https://download.pytorch.org/whl/cu121)
-    ```
+3. 安装其余依赖：
 
-3.  **安装核心依赖**：
-    ```bash
-    pip install faster-whisper streamlink numpy
-    ```
+```bash
+pip install -r requirements-windows.txt
+pip install streamlink
+```
 
----
+> 注意：不要在 Windows 上直接 `pip install torch`（会装成 CPU 版）。
+> 没有 NVIDIA GPU 时会自动回退 CPU + int8，速度较慢但能运行。
 
-## ⚙️ 配置文件说明
+### 弹幕登录（必须）
 
-项目使用 `.json` 文件来管理直播间信息。请在项目根目录下创建一个 json 文件（例如 `ava.json`）：
+B 站现在要求登录状态才能收到完整弹幕包。任选一种方式：
+
+```bash
+# 方式一：终端扫码，凭证保存到 .bili_credential.json
+python run.py --login
+
+# 方式二：把浏览器请求头里的 cookie 原文保存为项目根目录的 bilicookie.txt
+#         （文件已被 gitignore）
+```
+
+凭证也可以直接写在 `.env` 里（`BILI_SESSDATA`、`BILI_JCT`、`BILI_DEDEUSERID`、`BILI_BUVID3`、`BILI_BUVID4`）。
+
+### 公司代理
+
+如果 `HTTPS_PROXY` 已设置，程序会自动：
+
+- 让 `bilibili-api` 的 HTTP 与 WebSocket 都走 `HTTPS_PROXY`（给 aiohttp 的 `ws_connect` 显式注入代理）
+- 给 `streamlink` 追加 `--http-proxy`
+
+登录凭证失效时，弹幕会自动禁用并提示重新执行 `python run.py --login`，不影响语音转写。
+
+### MySQL（可选）
+
+不配置数据库时，弹幕仍会显示在 GUI 并写入 `logs/`，只是不入库。
+
+```bash
+cp .env.example .env
+# 编辑 .env 填写 DB_HOST / DB_USER / DB_PASSWORD / DB_DATABASE
+
+mysql -u root -p -e "CREATE DATABASE IF NOT EXISTS bili_live_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+mysql -u root -p bili_live_db < sql/schema.sql
+```
+
+程序启动时也会尝试自动建库/建表（`DB_AUTO_CREATE=1`），数据库不可用时会自动降级为只写日志。
+
+## 使用
+
+```bash
+python run.py
+```
+
+启动后：
+
+1. 点击「选择文件」，选择 `configs/` 下的配置（也可以直接输入房间号）。
+2. 勾选「监听弹幕/礼物」可同时拉取弹幕、礼物、上舰、SC、进场。
+3. 点击「▶ 启动监听」。模型在点击后才加载，首次可能需要等待。
+4. 字幕和弹幕显示在窗口，详细状态在控制台。
+
+可选参数：
+
+```bash
+python run.py --backend mlx               # 强制 MLX（macOS）
+python run.py --backend faster-whisper    # 强制 Faster-Whisper
+python run.py --device cpu                # 强制 CPU
+python run.py --model large-v3            # 覆盖默认模型
+python run.py --no-danmaku                # 本次不监听弹幕
+python run.py --login                     # 扫码登录并保存凭证
+python run.py --autostart                 # 启动后自动开始监听默认配置
+```
+
+### 配置文件
+
+`configs/*.json`：
 
 ```json
 {
-  "room_id": "24692760",
-  "streamer_name": "向晚Ava"
+  "room_id": "1950858520",
+  "streamer_name": "jiojio"
 }
 ```
-## 🚀 使用指南
-启动程序
-根据你的系统运行对应的脚本：
 
-macOS 用户:
+### 产物
+
+- 录像：`records/live_record_<room>_<ts>.mp4`
+- 切片：`records/Clip_<主播>_<时分秒>_from_<起始秒>s.mp4`
+- 转写日志：`logs/<主播>_<room>_log_<ts>.txt`
+- 弹幕日志：`logs/<主播>_<room>_danmaku_<ts>.txt`
+
+## 弹幕数据库表
+
+与 `bili_live_monitor` 兼容：
+
+- `danmu_messages`：弹幕内容、粉丝牌、用户等级
+- `gift_records`：礼物名称、数量、单价、总价、收礼人
+- `guard_records`：总督/提督/舰长、价格、起止时间
+- `entry_user_records`：进场记录
+- `super_chat_records`：醒目留言（SC）金额与内容
+
+## 工具
+
+先安装工具依赖：
+
+```bash
+pip install -r requirements-tools.txt
 ```
-Bash
-python mainGUIMLX-VAD.py
+
+直播复盘（需要本地 llama.cpp / Ollama 服务）：
+
+```bash
+python tools/summarize.py logs/xxx.txt --streamer 柚锖子
+python tools/summarize.py logs/xxx.txt --backend ollama --model qwen3-coder:30b
 ```
-Windows 用户:
+
+会议实时英译中（macOS，需要 BlackHole、portaudio 与本地 Qwen）：
+
+```bash
+brew install portaudio && pip install pyaudio
+python tools/meeting_translate.py
 ```
-Bash
-python mainGUIMLX-VAD-win.py
+
+## 测试
+
+```bash
+python -m unittest discover -s tests -v
 ```
-## 操作流程
-程序启动后，会先在控制台加载 VAD 和 Whisper 模型（需等待几秒）。
 
-GUI 窗口弹出后，点击 "选择文件" 按钮。
+## 已修复的旧问题
 
-选择你创建的 .json 配置文件（如 ava.json）。
+- Windows CPU 回退时 `compute_type` 不兼容
+- 固定 8 秒切块导致句子被截断（改为 VAD 静音断句）
+- 切片时间戳包含推理延迟（改用音频段时间戳）
+- 直播流中断后不再重连
+- 停止时采集进程无法及时退出
+- 停止/重连时录像转封装不完整
 
-点击 "▶ 启动监听"。
+## 说明
 
-## 观察效果：
-
-GUI 文本框会显示实时转写出的文字。
-
-后台控制台会打印详细的延迟数据和 VAD 过滤提示。
-
-## 📝 输出示例
-GUI 界面 (清爽版)
-控制台/日志文件 (硬核版)
-```
-Plaintext
-🔗 [系统] 正在连接直播间: 24692760...
-🎧 [系统] 音频流已建立，开始监听...
-🎵 [VAD] 检测到纯音乐/静音，跳过 Whisper... (⚡️0.32s) 兄弟们，今天这把我们要上分了。 (⚡️0.28s) 感谢榜一大哥送来的火箭，老板大气！
-🎵 [VAD] 检测到纯音乐/静音，跳过 Whisper... (⚡️0.41s) 刚才那是才艺展示哈。
-```
-### ⚠️ 常见问题
-Q1: macOS 上点击“选择文件”后程序闪退？
-
-原因: macOS 的 Tkinter 对复杂文件后缀支持不佳。
-
-解决: 确保代码中 filedialog 的 filetypes 设置为 *.json 而不是 *room.json。
-
-Q2: Windows 上报错 ffmpeg not found？
-
-原因: 环境变量没配好。
-
-解决: 检查系统 Path 变量，或者重启电脑使环境变量生效。
-
-Q3: 为什么一直是 "🎵 [VAD] 检测到纯音乐..."？
-
-原因: 主播可能没说话，或者背景音乐声音大过人声。
-
-解决: 这是正常现象，VAD 正在帮你过滤无效信息，节省计算资源。
-
-Q4: 出现重复字幕或幻觉 (如 "字幕 by...")？
-
-解决: 代码中已内置 IGNORE_KEYWORDS 列表，你可以自行在代码顶部添加需要过滤的关键词。
+- 仅用于个人学习与娱乐，请遵守平台条款与版权规定。
+- 原 `main*.py` 原型脚本已删除，历史版本仍可在 git 历史中查看。
+- 狼人杀相关代码已移到 `~/Documents/werewolf/`。
