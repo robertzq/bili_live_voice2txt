@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import datetime as dt
 import queue
 import threading
@@ -19,11 +20,17 @@ _STOP = object()
 EVENT_COMMANDS = (
     "DANMU_MSG",
     "SEND_GIFT",
+    "SEND_GIFT_V2",
     "GUARD_BUY",
     "SUPER_CHAT_MESSAGE",
     "INTERACT_WORD",
     "INTERACT_WORD_V2",
+    "UNIVERSAL_EVENT_GIFT",
+    "UNIVERSAL_EVENT_GIFT_V2",
 )
+
+MULTI_CONN_GIFT_NAME = "连麦投票"
+MULTI_CONN_SENDER_NAME = "连麦投票"
 
 GUARD_NAMES = {1: "总督", 2: "提督", 3: "舰长"}
 
@@ -140,9 +147,10 @@ class DanmakuEvent:
         if self.kind == "danmaku":
             return f"[{moment}] [弹幕] {self.medal_text}{self.user_text}: {self.content}"
         if self.kind == "gift":
+            target = f" -> {self.receiver_name}" if self.receiver_name else ""
             return (
                 f"[{moment}] [礼物] {self.medal_text}{self.username} 赠送 "
-                f"{self.gift_name} x{self.gift_num} (¥{self.total_price:.2f})"
+                f"{self.gift_name} x{self.gift_num} (¥{self.total_price:.2f}){target}"
             )
         if self.kind == "guard":
             return (
@@ -164,6 +172,9 @@ def parse_event(cmd: str, payload: dict, room_id: int) -> Optional[DanmakuEvent]
         return _parse_danmaku(payload, room_id)
     if cmd == "SEND_GIFT":
         return _parse_gift(payload, room_id)
+    if cmd == "SEND_GIFT_V2":
+        events = _parse_gift_v2(payload, room_id)
+        return events[0] if events else None
     if cmd == "GUARD_BUY":
         return _parse_guard(payload, room_id)
     if cmd == "SUPER_CHAT_MESSAGE":
@@ -171,6 +182,13 @@ def parse_event(cmd: str, payload: dict, room_id: int) -> Optional[DanmakuEvent]
     if cmd in {"INTERACT_WORD", "INTERACT_WORD_V2"}:
         return _parse_entry(payload, room_id)
     return None
+
+
+def parse_events(cmd: str, payload: dict, room_id: int) -> list[DanmakuEvent]:
+    if cmd == "SEND_GIFT_V2":
+        return _parse_gift_v2(payload, room_id)
+    event = parse_event(cmd, payload, room_id)
+    return [event] if event is not None else []
 
 
 def _parse_danmaku(payload: dict, room_id: int) -> Optional[DanmakuEvent]:
@@ -240,6 +258,169 @@ def _parse_gift(payload: dict, room_id: int) -> Optional[DanmakuEvent]:
         receiver_id=_to_optional_int(receiver.get("uid")),
         receiver_name=receiver.get("uname"),
     )
+
+
+def _read_varint(data: bytes, pos: int) -> tuple[int, int]:
+    value = 0
+    shift = 0
+    while pos < len(data):
+        byte = data[pos]
+        pos += 1
+        value |= (byte & 0x7F) << shift
+        if not byte & 0x80:
+            return value, pos
+        shift += 7
+        if shift >= 70:
+            break
+    raise ValueError("truncated varint")
+
+
+def _pb_decode(data: bytes) -> dict[int, list[tuple[int, Any]]]:
+    """极简 protobuf wire-format 解析，字段号 -> [(wire_type, value)]。"""
+    fields: dict[int, list[tuple[int, Any]]] = {}
+    pos = 0
+    size = len(data)
+    while pos < size:
+        key, pos = _read_varint(data, pos)
+        number = key >> 3
+        wire = key & 0x7
+        if number <= 0:
+            raise ValueError("invalid field number")
+        if wire == 0:
+            value, pos = _read_varint(data, pos)
+        elif wire == 1:
+            if pos + 8 > size:
+                raise ValueError("truncated fixed64")
+            value = data[pos : pos + 8]
+            pos += 8
+        elif wire == 2:
+            length, pos = _read_varint(data, pos)
+            if length < 0 or pos + length > size:
+                raise ValueError("truncated bytes")
+            value = data[pos : pos + length]
+            pos += length
+        elif wire == 5:
+            if pos + 4 > size:
+                raise ValueError("truncated fixed32")
+            value = data[pos : pos + 4]
+            pos += 4
+        else:
+            raise ValueError(f"unsupported wire type {wire}")
+        fields.setdefault(number, []).append((wire, value))
+    return fields
+
+
+def _pb_int(fields: dict[int, list[tuple[int, Any]]], number: int, default: int = 0) -> int:
+    for wire, value in reversed(fields.get(number, [])):
+        if wire == 0:
+            return int(value)
+    return default
+
+
+def _pb_optional_int(fields: dict[int, list[tuple[int, Any]]], number: int) -> Optional[int]:
+    for wire, value in reversed(fields.get(number, [])):
+        if wire == 0:
+            return int(value)
+    return None
+
+
+def _pb_str(fields: dict[int, list[tuple[int, Any]]], number: int) -> str:
+    for wire, value in reversed(fields.get(number, [])):
+        if wire == 2:
+            try:
+                return value.decode("utf-8")
+            except UnicodeDecodeError:
+                return ""
+    return ""
+
+
+def _pb_message(
+    fields: dict[int, list[tuple[int, Any]]], number: int
+) -> dict[int, list[tuple[int, Any]]]:
+    for wire, value in reversed(fields.get(number, [])):
+        if wire == 2:
+            try:
+                return _pb_decode(value)
+            except ValueError:
+                return {}
+    return {}
+
+
+def _pb_messages(
+    fields: dict[int, list[tuple[int, Any]]], number: int
+) -> list[dict[int, list[tuple[int, Any]]]]:
+    messages = []
+    for wire, value in fields.get(number, []):
+        if wire == 2:
+            try:
+                messages.append(_pb_decode(value))
+            except ValueError:
+                continue
+    return messages
+
+
+def _parse_gift_v2(payload: dict, room_id: int) -> list[DanmakuEvent]:
+    data = payload.get("data") or {}
+    if not isinstance(data, dict):
+        return []
+    if data.get("giftName") or data.get("gift_name"):
+        event = _parse_gift({"data": data}, room_id)
+        return [event] if event is not None else []
+
+    encoded = data.get("pb")
+    if not isinstance(encoded, str) or not encoded:
+        return []
+    try:
+        top = _pb_decode(base64.b64decode(encoded))
+    except (ValueError, TypeError):
+        return []
+
+    uid = _pb_int(top, 1)
+    username = _pb_str(top, 2)
+    medal = _pb_message(top, 8)
+    medal_name = _pb_str(medal, 6) or None
+    medal_level = _pb_optional_int(medal, 5)
+
+    events: list[DanmakuEvent] = []
+    for gift in _pb_messages(top, 10):
+        gift_name = _pb_str(gift, 2)
+        if not gift_name:
+            continue
+        num = max(1, _pb_int(gift, 3, 1))
+        coin_type = _pb_str(gift, 8) or "gold"
+        slots = [value for value in (_pb_int(gift, field) for field in (5, 6, 7)) if value > 0]
+        unit_coin = slots[0] if slots else 0
+        total_coin = max(slots) if slots else 0
+        if num > 1 and total_coin < unit_coin * num:
+            total_coin = unit_coin * num
+        if coin_type == "silver":
+            unit_coin = 0
+            total_coin = 0
+
+        receiver = _pb_message(gift, 29)
+        receiver_uid = _pb_optional_int(receiver, 2)
+        receiver_name = _pb_str(receiver, 1) or None
+
+        events.append(
+            DanmakuEvent(
+                kind="gift",
+                room_id=room_id,
+                timestamp=_to_datetime(_pb_int(gift, 10)),
+                uid=uid,
+                username=username,
+                content=gift_name,
+                medal_name=medal_name,
+                medal_level=medal_level,
+                gift_name=gift_name,
+                gift_num=num,
+                price=unit_coin / 1000.0,
+                total_price=total_coin / 1000.0,
+                receiver_id=receiver_uid,
+                receiver_name=receiver_name,
+                extra={"source": "SEND_GIFT_V2"},
+            )
+        )
+    return events
 
 
 def _parse_guard(payload: dict, room_id: int) -> Optional[DanmakuEvent]:
@@ -331,6 +512,83 @@ def _parse_entry(payload: dict, room_id: int) -> Optional[DanmakuEvent]:
     )
 
 
+class MultiConnGiftTracker:
+    """把连麦/多人连线的累计票数转换成增量礼物事件。
+
+    UNIVERSAL_EVENT_GIFT / _V2 只提供每位连麦主播的累计票数，不提供送礼人。
+    这里按每个主播的历史最高票数比较，只在票数增加时生成一条 gift 记录。
+    """
+
+    def __init__(self) -> None:
+        self._session = None
+        self._last_scores: dict[int, int] = {}
+        self._members: dict[int, str] = {}
+
+    def process(self, payload: dict, room_id: int) -> list[DanmakuEvent]:
+        inner = payload.get("data") or {}
+        session = inner.get("biz_session_id")
+        info = inner.get("info") or {}
+        timestamp = _to_datetime(inner.get("system_time_unix"))
+
+        if session != self._session:
+            self._session = session
+            self._last_scores = {}
+            self._members = {}
+
+        members = info.get("members") or inner.get("members") or []
+        for member in members:
+            uid = _to_int(member.get("uid"))
+            if uid:
+                self._members[uid] = str(member.get("uname") or "")
+
+        scores: dict[int, int] = {}
+        score_items = (info.get("multi_conn_info") or {}).get("scores") or []
+        if score_items:
+            for item in score_items:
+                uid = _to_int(item.get("uid"))
+                if uid:
+                    scores[uid] = _to_int(item.get("price"))
+        else:
+            for member in members:
+                uid = _to_int(member.get("uid"))
+                multi_conn = (member.get("biz_extra_data") or {}).get("multi_conn") or {}
+                if uid and multi_conn.get("price") is not None:
+                    scores[uid] = _to_int(multi_conn.get("price"))
+
+        events: list[DanmakuEvent] = []
+        for uid, price in scores.items():
+            previous = self._last_scores.get(uid)
+            if previous is None:
+                # 第一份快照只作为基线，不补发历史票数。
+                self._last_scores[uid] = price
+                continue
+            if price <= previous:
+                # 重复快照或乱序旧快照：保持最大值，避免重复计数。
+                continue
+            self._last_scores[uid] = price
+            delta = price - previous
+            tickets = max(1, delta // 100)
+            receiver = self._members.get(uid, "")
+            events.append(
+                DanmakuEvent(
+                    kind="gift",
+                    room_id=room_id,
+                    timestamp=timestamp,
+                    uid=0,
+                    username=MULTI_CONN_SENDER_NAME,
+                    content=f"{MULTI_CONN_GIFT_NAME} -> {receiver}",
+                    gift_name=MULTI_CONN_GIFT_NAME,
+                    gift_num=tickets,
+                    price=0.1,
+                    total_price=delta / 1000.0,
+                    receiver_id=uid,
+                    receiver_name=receiver or None,
+                    extra={"source": "UNIVERSAL_EVENT_GIFT"},
+                )
+            )
+        return events
+
+
 class DanmakuService:
     """在独立线程里运行 asyncio 弹幕客户端。
 
@@ -355,6 +613,7 @@ class DanmakuService:
         self._queue: queue.Queue = queue.Queue()
         self._last_activity = time.monotonic()
         self._writer_thread: Optional[threading.Thread] = None
+        self._multi_conn_tracker = MultiConnGiftTracker()
 
     def stop(self) -> None:
         self._stop.set()
@@ -467,8 +726,11 @@ class DanmakuService:
         async def handler(event: dict) -> None:
             self._last_activity = time.monotonic()
             payload = event.get("data") or {}
-            parsed = parse_event(command, payload, self.room_id)
-            if parsed is not None:
+            if command in {"UNIVERSAL_EVENT_GIFT", "UNIVERSAL_EVENT_GIFT_V2"}:
+                for gift in self._multi_conn_tracker.process(payload, self.room_id):
+                    self._queue.put(gift)
+                return
+            for parsed in parse_events(command, payload, self.room_id):
                 self._queue.put(parsed)
 
         return handler

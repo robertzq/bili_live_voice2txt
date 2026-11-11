@@ -145,3 +145,217 @@ class DanmakuParseTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MultiConnGiftTrackerTests(unittest.TestCase):
+    def _payload(self, version, price, session="s1", cmd="UNIVERSAL_EVENT_GIFT"):
+        if cmd == "UNIVERSAL_EVENT_GIFT_V2":
+            return {
+                "cmd": cmd,
+                "data": {
+                    "biz_session_id": session,
+                    "system_time_unix": 1700000000,
+                    "version": version,
+                    "members": [
+                        {
+                            "uid": 1,
+                            "uname": "主播A",
+                            "biz_extra_data": {"multi_conn": {"price": price}},
+                        }
+                    ],
+                },
+            }
+        return {
+            "cmd": cmd,
+            "data": {
+                "biz_session_id": session,
+                "system_time_unix": 1700000000,
+                "info": {
+                    "version": version,
+                    "members": [{"uid": 1, "uname": "主播A"}],
+                    "multi_conn_info": {"scores": [{"uid": 1, "price": price}]},
+                },
+            },
+        }
+
+    def test_first_snapshot_is_baseline(self):
+        from bililive.danmaku import MultiConnGiftTracker
+
+        tracker = MultiConnGiftTracker()
+        self.assertEqual(tracker.process(self._payload(100, 1000), 123), [])
+
+    def test_score_increase_creates_gift(self):
+        from bililive.danmaku import MultiConnGiftTracker
+
+        tracker = MultiConnGiftTracker()
+        tracker.process(self._payload(100, 1000), 123)
+        events = tracker.process(self._payload(101, 1500), 123)
+        self.assertEqual(len(events), 1)
+        event = events[0]
+        self.assertEqual(event.kind, "gift")
+        self.assertEqual(event.gift_name, "连麦投票")
+        self.assertEqual(event.gift_num, 5)
+        self.assertAlmostEqual(event.total_price, 0.5)
+        self.assertEqual(event.receiver_name, "主播A")
+
+    def test_duplicate_and_older_versions_are_ignored(self):
+        from bililive.danmaku import MultiConnGiftTracker
+
+        tracker = MultiConnGiftTracker()
+        tracker.process(self._payload(100, 1000), 123)
+        tracker.process(self._payload(101, 1500), 123)
+        self.assertEqual(tracker.process(self._payload(101, 1500), 123), [])
+        self.assertEqual(tracker.process(self._payload(100, 1500), 123), [])
+
+    def test_v2_payload_is_supported(self):
+        from bililive.danmaku import MultiConnGiftTracker
+
+        tracker = MultiConnGiftTracker()
+        tracker.process(self._payload(100, 1000), 123)
+        events = tracker.process(
+            self._payload(102, 2000, cmd="UNIVERSAL_EVENT_GIFT_V2"), 123
+        )
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].gift_num, 10)
+        self.assertAlmostEqual(events[0].total_price, 1.0)
+
+    def test_new_session_resets_baseline(self):
+        from bililive.danmaku import MultiConnGiftTracker
+
+        tracker = MultiConnGiftTracker()
+        tracker.process(self._payload(100, 1000, session="s1"), 123)
+        self.assertEqual(
+            tracker.process(self._payload(100, 5000, session="s2"), 123), []
+        )
+        events = tracker.process(self._payload(101, 6000, session="s2"), 123)
+        self.assertEqual(len(events), 1)
+
+    def test_out_of_order_snapshot_does_not_double_count(self):
+        from bililive.danmaku import MultiConnGiftTracker
+
+        tracker = MultiConnGiftTracker()
+        tracker.process(self._payload(100, 1000), 123)
+        first = tracker.process(self._payload(101, 1500), 123)
+        self.assertEqual(first[0].gift_num, 5)
+        self.assertEqual(tracker.process(self._payload(100, 1000), 123), [])
+        second = tracker.process(self._payload(102, 1600), 123)
+        self.assertEqual(len(second), 1)
+        self.assertEqual(second[0].gift_num, 1)
+
+    def test_service_handler_queues_universal_gift(self):
+        import asyncio
+        from bililive.danmaku import DanmakuService
+
+        service = DanmakuService(123, on_event=lambda _event: None)
+        handler = service._make_handler("UNIVERSAL_EVENT_GIFT")
+        asyncio.run(handler({"data": self._payload(100, 1000)}))
+        asyncio.run(handler({"data": self._payload(101, 1500)}))
+        event = service._queue.get_nowait()
+        self.assertEqual(event.gift_name, "连麦投票")
+        self.assertEqual(event.gift_num, 5)
+
+
+class SendGiftV2Tests(unittest.TestCase):
+    @staticmethod
+    def _varint(value):
+        out = bytearray()
+        while True:
+            byte = value & 0x7F
+            value >>= 7
+            if value:
+                out.append(byte | 0x80)
+            else:
+                out.append(byte)
+                return bytes(out)
+
+    @classmethod
+    def _field(cls, number, wire, payload):
+        key = cls._varint((number << 3) | wire)
+        if wire == 0:
+            return key + cls._varint(payload)
+        if wire == 2:
+            return key + cls._varint(len(payload)) + payload
+        raise ValueError(wire)
+
+    @classmethod
+    def _gift_message(cls, num=1, coin_type="gold", gift_name="粉丝团灯牌"):
+        price = 0 if coin_type == "silver" else 100
+        receiver = cls._field(1, 2, "测试主播".encode()) + cls._field(2, 0, 30003)
+        return b"".join(
+            [
+                cls._field(1, 0, 31164),
+                cls._field(2, 2, gift_name.encode()),
+                cls._field(3, 0, num),
+                cls._field(5, 0, price),
+                cls._field(6, 0, price),
+                cls._field(7, 0, price * num),
+                cls._field(8, 2, coin_type.encode()),
+                cls._field(10, 0, 1789041024),
+                cls._field(29, 2, receiver),
+            ]
+        )
+
+    @classmethod
+    def _payload(cls, gifts=None, coin_type="gold"):
+        medal = cls._field(5, 0, 30) + cls._field(6, 2, "测试牌子".encode())
+        gifts = gifts or [cls._gift_message(coin_type=coin_type)]
+        body = (
+            cls._field(1, 0, 10001)
+            + cls._field(2, 2, "测试观众甲".encode())
+            + cls._field(8, 2, medal)
+            + b"".join(cls._field(10, 2, gift) for gift in gifts)
+        )
+        import base64
+
+        return {"data": {"pb": base64.b64encode(body).decode()}}
+
+    def test_parses_sender_gift_receiver_and_medal(self):
+        from bililive.danmaku import parse_event
+
+        event = parse_event("SEND_GIFT_V2", self._payload(), 123)
+        self.assertIsNotNone(event)
+        self.assertEqual(event.kind, "gift")
+        self.assertEqual(event.uid, 10001)
+        self.assertEqual(event.username, "测试观众甲")
+        self.assertEqual(event.medal_name, "测试牌子")
+        self.assertEqual(event.medal_level, 30)
+        self.assertEqual(event.gift_name, "粉丝团灯牌")
+        self.assertEqual(event.gift_num, 1)
+        self.assertAlmostEqual(event.price, 0.1)
+        self.assertAlmostEqual(event.total_price, 0.1)
+        self.assertEqual(event.receiver_id, 30003)
+        self.assertEqual(event.receiver_name, "测试主播")
+
+    def test_multiple_gift_items_are_all_returned(self):
+        from bililive.danmaku import parse_events
+
+        events = parse_events(
+            "SEND_GIFT_V2",
+            self._payload(
+                [
+                    self._gift_message(gift_name="礼物A"),
+                    self._gift_message(gift_name="礼物B"),
+                ]
+            ),
+            123,
+        )
+        self.assertEqual([event.gift_name for event in events], ["礼物A", "礼物B"])
+
+    def test_silver_gift_is_free(self):
+        from bililive.danmaku import parse_event
+
+        event = parse_event(
+            "SEND_GIFT_V2", self._payload(coin_type="silver"), 123
+        )
+        self.assertEqual(event.price, 0.0)
+        self.assertEqual(event.total_price, 0.0)
+
+    def test_service_handler_queues_gift_v2(self):
+        import asyncio
+        from bililive.danmaku import DanmakuService
+
+        service = DanmakuService(123, on_event=lambda _event: None)
+        handler = service._make_handler("SEND_GIFT_V2")
+        asyncio.run(handler({"data": {"data": self._payload()["data"]}}))
+        event = service._queue.get_nowait()
+        self.assertEqual(event.gift_name, "粉丝团灯牌")

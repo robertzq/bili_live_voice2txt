@@ -160,6 +160,8 @@ python run.py --autostart                 # 启动后自动开始监听默认配
 
 - `danmu_messages`：弹幕内容、粉丝牌、用户等级
 - `gift_records`：礼物名称、数量、单价、总价、收礼人
+  - 普通礼物来自 `SEND_GIFT` / `SEND_GIFT_V2`（V2 为 protobuf 编码）
+  - 连麦/多人连线的“票”来自 `UNIVERSAL_EVENT_GIFT`，按累计票数增量记录，`gift_name` 为 `连麦投票`，送礼人未知
 - `guard_records`：总督/提督/舰长、价格、起止时间
 - `entry_user_records`：进场记录
 - `super_chat_records`：醒目留言（SC）金额与内容
