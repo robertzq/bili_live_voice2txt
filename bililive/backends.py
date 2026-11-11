@@ -68,8 +68,9 @@ class MLXTranscriber:
             path_or_hf_repo=self.model,
             language=self.language,
             verbose=False,
-            no_speech_threshold=0.4,
-            logprob_threshold=-0.8,
+            temperature=0.0,
+            no_speech_threshold=0.6,
+            logprob_threshold=-1.0,
             condition_on_previous_text=False,
         )
         return str(result.get("text", "")).strip()
@@ -121,9 +122,10 @@ class FasterWhisperTranscriber:
             audio,
             beam_size=5,
             language=self.language,
+            temperature=0.0,
             vad_filter=False,
-            no_speech_threshold=0.4,
-            log_prob_threshold=-0.8,
+            no_speech_threshold=0.6,
+            log_prob_threshold=-1.0,
             condition_on_previous_text=False,
         )
         return "".join(segment.text for segment in segments).strip()

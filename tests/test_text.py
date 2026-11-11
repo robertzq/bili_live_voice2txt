@@ -1,6 +1,14 @@
 import unittest
 
-from bililive.text import TranscriptFilter, is_hallucination, normalize_text
+from bililive.text import TranscriptFilter, clean_transcript, is_hallucination, is_repetition, normalize_text
+
+
+class TranscriptCleanTests(unittest.TestCase):
+    def test_special_tokens_are_removed(self):
+        self.assertEqual(clean_transcript("<|fr|>你好<|endoftext|>"), "你好")
+
+    def test_whitespace_is_collapsed(self):
+        self.assertEqual(clean_transcript("  你好   世界  "), "你好 世界")
 
 
 class TextFilterTests(unittest.TestCase):
@@ -11,6 +19,15 @@ class TextFilterTests(unittest.TestCase):
         self.assertTrue(is_hallucination("字幕by 某某"))
         self.assertTrue(is_hallucination("请订阅我的频道"))
         self.assertFalse(is_hallucination("今天直播内容不错"))
+
+    def test_repetition_is_detected(self):
+        self.assertTrue(is_repetition("prostitute " * 10))
+        self.assertTrue(is_repetition("群" * 30))
+        self.assertFalse(is_repetition("哈哈哈哈"))
+
+    def test_filter_rejects_repetition(self):
+        transcript_filter = TranscriptFilter()
+        self.assertFalse(transcript_filter.accept("prostitute " * 10))
 
     def test_filter_rejects_short_and_empty(self):
         transcript_filter = TranscriptFilter(min_length=2)

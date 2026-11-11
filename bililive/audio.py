@@ -59,6 +59,8 @@ class SpeechSegmenter:
         min_speech_seconds: float = 0.35,
         max_speech_seconds: float = 15.0,
         pre_roll_seconds: float = 0.2,
+        min_emit_seconds: float = 0.0,
+        merge_silence_seconds: float = 0.0,
     ) -> None:
         self.vad = vad
         self.sample_rate = sample_rate
@@ -66,12 +68,15 @@ class SpeechSegmenter:
         self.frame_seconds = frame_samples / sample_rate
         self.min_speech_seconds = min_speech_seconds
         self.max_speech_seconds = max_speech_seconds
+        self.min_emit_seconds = min_emit_seconds
+        self.merge_silence_seconds = merge_silence_seconds
         pre_roll_frames = max(1, round(pre_roll_seconds / self.frame_seconds))
         self._pre_roll: deque[tuple[np.ndarray, float]] = deque(maxlen=pre_roll_frames)
         self._frames: list[tuple[np.ndarray, float]] = []
         self._start: Optional[float] = None
         self._last_time: float = 0.0
         self._active = False
+        self._pending_end: Optional[float] = None
 
     def push_block(self, audio: np.ndarray, block_start: float) -> list[SpeechSegment]:
         results: list[SpeechSegment] = []
@@ -90,27 +95,43 @@ class SpeechSegmenter:
 
         if event == "start":
             self._begin(frame_start)
+            self._pending_end = None
 
+        duration = 0.0
         if self._active:
             self._frames.append((frame, frame_start))
             self._last_time = frame_end
+            duration = frame_end - (self._start if self._start is not None else frame_end)
+
             if event == "end":
-                segment = self._finish()
-                if segment is not None:
-                    results.append(segment)
+                # 太短的句子先不切，等一小段静音确认是否还有后续。
+                if duration >= self.min_emit_seconds:
+                    self._emit(results)
+                else:
+                    self._pending_end = frame_end
+            elif (
+                self._pending_end is not None
+                and frame_end - self._pending_end >= self.merge_silence_seconds
+            ):
+                self._emit(results)
         else:
             self._pre_roll.append((frame, frame_start))
 
-        if self._active and (self._last_time - (self._start or 0.0)) >= self.max_speech_seconds:
-            segment = self._finish()
-            if segment is not None:
-                results.append(segment)
+        if self._active and duration >= self.max_speech_seconds:
+            self._emit(results)
             # 强制切分后继续接收后续语音，不等待下一次 VAD start。
             self._start = frame_end
             self._last_time = frame_end
             self._active = True
+            self._pending_end = None
 
         return results
+
+    def _emit(self, results: list[SpeechSegment]) -> None:
+        segment = self._finish()
+        if segment is not None:
+            results.append(segment)
+        self._pending_end = None
 
     def _begin(self, frame_start: float) -> None:
         if self._active:
@@ -134,6 +155,7 @@ class SpeechSegmenter:
         self._frames = []
         self._active = False
         self._start = None
+        self._pending_end = None
         self._pre_roll.clear()
 
         if not frames:

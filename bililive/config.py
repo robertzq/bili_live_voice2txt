@@ -34,6 +34,11 @@ IGNORE_KEYWORDS = [
     "Copyright",
     "The following content",
     "中文字幕志愿者",
+    "请不吝点赞",
+    "明镜与点点",
+    "prostitute",
+    "utar",
+    "Republican",
 ]
 
 TRIGGER_KEYWORDS = [

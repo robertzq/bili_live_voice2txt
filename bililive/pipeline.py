@@ -20,7 +20,7 @@ from .config import (
 )
 from .danmaku import DanmakuEvent, DanmakuRecorder, DanmakuService
 from .database import DatabaseConfig, DanmakuStore
-from .text import TranscriptFilter
+from .text import TranscriptFilter, clean_transcript
 from .vad import SileroVAD
 
 MessageCallback = Callable[[str], None]
@@ -144,7 +144,12 @@ class Pipeline:
             self.on_message(f"📝 [日志] {self._log_path}")
 
             transcript_filter = TranscriptFilter()
-            segmenter = SpeechSegmenter(vad)
+            segmenter = SpeechSegmenter(
+                vad,
+                min_emit_seconds=2.5,
+                merge_silence_seconds=0.6,
+                max_speech_seconds=10.0,
+            )
             clipper = Clipper(
                 record_provider=lambda: (
                     self._capture.record_path if self._capture is not None else None
@@ -277,7 +282,7 @@ class Pipeline:
             segment, record_file = item
             started = time.time()
             try:
-                text = transcriber.transcribe(segment.audio)
+                text = clean_transcript(transcriber.transcribe(segment.audio))
             except Exception as exc:
                 self.on_message(f"❌ [转写] {exc}")
                 continue

@@ -65,6 +65,29 @@ class AudioTests(unittest.TestCase):
         for segment in segments[:-1]:
             self.assertLessEqual(segment.duration, 0.6)
 
+    def test_short_segments_are_merged_after_silence(self):
+        vad = FakeVAD({1: "start", 10: "end", 20: "start", 30: "end"})
+        segmenter = SpeechSegmenter(
+            vad,
+            min_speech_seconds=0.0,
+            min_emit_seconds=1.0,
+            merge_silence_seconds=0.5,
+        )
+        segments = segmenter.push_block(make_block(70), 0.0)
+        self.assertEqual(len(segments), 1)
+        self.assertGreater(segments[0].duration, 1.0)
+
+    def test_long_gap_still_splits(self):
+        vad = FakeVAD({1: "start", 10: "end", 40: "start", 50: "end"})
+        segmenter = SpeechSegmenter(
+            vad,
+            min_speech_seconds=0.0,
+            min_emit_seconds=1.0,
+            merge_silence_seconds=0.5,
+        )
+        segments = segmenter.push_block(make_block(80), 0.0)
+        self.assertEqual(len(segments), 2)
+
     def test_flush_emits_active_segment(self):
         vad = FakeVAD({1: "start"})
         segmenter = SpeechSegmenter(vad, min_speech_seconds=0.0)
