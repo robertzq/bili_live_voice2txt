@@ -239,8 +239,24 @@ def _parse_gift(payload: dict, room_id: int) -> Optional[DanmakuEvent]:
         price = 0.0
         total_price = 0.0
 
-    medal_name, medal_level = _medal_fields(data.get("medal_info"))
+    medal_info = data.get("medal_info") or {}
+    if not isinstance(medal_info, dict):
+        medal_info = {}
+    medal_name, medal_level = _medal_fields(medal_info)
+    medal_target_id = _to_optional_int(
+        medal_info.get("anchor_uid") or medal_info.get("target_id")
+    )
     receiver = data.get("receiver_uinfo") or data.get("receiver") or {}
+    receiver_id = _to_optional_int(receiver.get("uid"))
+    medal_mismatch = bool(
+        medal_name
+        and receiver_id
+        and medal_target_id
+        and medal_target_id != receiver_id
+    )
+    if medal_mismatch:
+        medal_name = None
+        medal_level = None
 
     return DanmakuEvent(
         kind="gift",
@@ -255,8 +271,12 @@ def _parse_gift(payload: dict, room_id: int) -> Optional[DanmakuEvent]:
         gift_num=num,
         price=price,
         total_price=total_price,
-        receiver_id=_to_optional_int(receiver.get("uid")),
+        receiver_id=receiver_id,
         receiver_name=receiver.get("uname"),
+        extra={
+            "medal_target_id": medal_target_id,
+            "medal_mismatch": medal_mismatch,
+        },
     )
 
 
@@ -401,6 +421,16 @@ def _parse_gift_v2(payload: dict, room_id: int) -> list[DanmakuEvent]:
         receiver_uid = _pb_optional_int(receiver, 2)
         receiver_name = _pb_str(receiver, 1) or None
 
+        medal_target_id = _pb_optional_int(medal, 1)
+        medal_mismatch = bool(
+            medal_name
+            and receiver_uid
+            and medal_target_id
+            and medal_target_id != receiver_uid
+        )
+        event_medal_name = None if medal_mismatch else medal_name
+        event_medal_level = None if medal_mismatch else medal_level
+
         events.append(
             DanmakuEvent(
                 kind="gift",
@@ -409,15 +439,19 @@ def _parse_gift_v2(payload: dict, room_id: int) -> list[DanmakuEvent]:
                 uid=uid,
                 username=username,
                 content=gift_name,
-                medal_name=medal_name,
-                medal_level=medal_level,
+                medal_name=event_medal_name,
+                medal_level=event_medal_level,
                 gift_name=gift_name,
                 gift_num=num,
                 price=unit_coin / 1000.0,
                 total_price=total_coin / 1000.0,
                 receiver_id=receiver_uid,
                 receiver_name=receiver_name,
-                extra={"source": "SEND_GIFT_V2"},
+                extra={
+                    "source": "SEND_GIFT_V2",
+                    "medal_target_id": medal_target_id,
+                    "medal_mismatch": medal_mismatch,
+                },
             )
         )
     return events
@@ -614,6 +648,7 @@ class DanmakuService:
         self._last_activity = time.monotonic()
         self._writer_thread: Optional[threading.Thread] = None
         self._multi_conn_tracker = MultiConnGiftTracker()
+        self._medal_cache: dict[int, tuple[str, Optional[int]]] = {}
 
     def stop(self) -> None:
         self._stop.set()
@@ -731,9 +766,25 @@ class DanmakuService:
                     self._queue.put(gift)
                 return
             for parsed in parse_events(command, payload, self.room_id):
+                self._apply_medal(parsed)
                 self._queue.put(parsed)
 
         return handler
+
+    def _apply_medal(self, event: DanmakuEvent) -> None:
+        """礼物优先使用当前直播间弹幕/进场里缓存的粉丝牌。"""
+        if event.kind in {"danmaku", "entry"}:
+            if event.uid and event.medal_name:
+                self._medal_cache[event.uid] = (event.medal_name, event.medal_level)
+            return
+        if event.kind != "gift" or not event.uid:
+            return
+        cached = self._medal_cache.get(event.uid)
+        if cached:
+            event.medal_name, event.medal_level = cached
+        elif event.extra.get("medal_mismatch"):
+            event.medal_name = None
+            event.medal_level = None
 
 
 class DanmakuRecorder:

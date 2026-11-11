@@ -296,8 +296,12 @@ class SendGiftV2Tests(unittest.TestCase):
         )
 
     @classmethod
-    def _payload(cls, gifts=None, coin_type="gold"):
-        medal = cls._field(5, 0, 30) + cls._field(6, 2, "测试牌子".encode())
+    def _payload(cls, gifts=None, coin_type="gold", medal_target_id=30003):
+        medal = (
+            cls._field(1, 0, medal_target_id)
+            + cls._field(5, 0, 30)
+            + cls._field(6, 2, "测试牌子".encode())
+        )
         gifts = gifts or [cls._gift_message(coin_type=coin_type)]
         body = (
             cls._field(1, 0, 10001)
@@ -349,6 +353,70 @@ class SendGiftV2Tests(unittest.TestCase):
         )
         self.assertEqual(event.price, 0.0)
         self.assertEqual(event.total_price, 0.0)
+
+    def test_medal_from_other_room_is_cleared(self):
+        from bililive.danmaku import parse_event
+
+        event = parse_event(
+            "SEND_GIFT_V2", self._payload(medal_target_id=99999), 123
+        )
+        self.assertIsNone(event.medal_name)
+        self.assertIsNone(event.medal_level)
+        self.assertTrue(event.extra["medal_mismatch"])
+
+    def test_medal_from_current_room_is_kept(self):
+        from bililive.danmaku import parse_event
+
+        event = parse_event(
+            "SEND_GIFT_V2", self._payload(medal_target_id=30003), 123
+        )
+        self.assertEqual(event.medal_name, "测试牌子")
+        self.assertEqual(event.medal_level, 30)
+
+    def test_service_uses_cached_current_room_medal_for_gift(self):
+        import datetime as dt
+        from bililive.danmaku import DanmakuEvent, DanmakuService
+
+        service = DanmakuService(123, on_event=lambda _event: None)
+        service._apply_medal(
+            DanmakuEvent(
+                kind="danmaku",
+                room_id=123,
+                timestamp=dt.datetime.now(),
+                uid=10001,
+                medal_name="恋汐生",
+                medal_level=39,
+            )
+        )
+        gift = DanmakuEvent(
+            kind="gift",
+            room_id=123,
+            timestamp=dt.datetime.now(),
+            uid=10001,
+            medal_name="弃車人",
+            medal_level=31,
+        )
+        service._apply_medal(gift)
+        self.assertEqual(gift.medal_name, "恋汐生")
+        self.assertEqual(gift.medal_level, 39)
+
+    def test_mismatched_gift_medal_is_cleared_without_cache(self):
+        import datetime as dt
+        from bililive.danmaku import DanmakuEvent, DanmakuService
+
+        service = DanmakuService(123, on_event=lambda _event: None)
+        gift = DanmakuEvent(
+            kind="gift",
+            room_id=123,
+            timestamp=dt.datetime.now(),
+            uid=2,
+            medal_name="乌拉宝",
+            medal_level=42,
+            extra={"medal_mismatch": True},
+        )
+        service._apply_medal(gift)
+        self.assertIsNone(gift.medal_name)
+        self.assertIsNone(gift.medal_level)
 
     def test_service_handler_queues_gift_v2(self):
         import asyncio
