@@ -38,11 +38,14 @@ bili-whisper/
 ├── configs/               # 直播间配置
 ├── records/               # 录像与切片
 ├── logs/                  # 转写日志与弹幕日志
+├── reports/               # 复盘报告（Markdown + PNG，自动生成）
 ├── sql/schema.sql         # MySQL 建表脚本
 ├── .env.example           # 数据库/凭证配置模板
 ├── tools/
 │   ├── meeting_translate.py  # 会议实时英译中（原 catchTranslate.py）
-│   └── summarize.py          # 直播日志复盘
+│   ├── summarize.py          # 直播复盘 CLI / 入口
+│   ├── summarize_gui.py      # 复盘图形界面（多选 / 拖拽 / 按天）
+│   └── report_render.py      # Markdown + Mermaid 渲染成 PNG
 └── tests/                 # 单元测试
 ```
 
@@ -172,14 +175,32 @@ python run.py --autostart                 # 启动后自动开始监听默认配
 
 ```bash
 pip install -r requirements-tools.txt
+python -m playwright install chromium   # 用于把报告渲染成长图
 ```
 
-直播复盘（需要本地 llama.cpp / Ollama 服务）：
+### 直播复盘（DeepSeek）
+
+把 DeepSeek API Key 写入 `tools/.dsSecretKey`（或设置环境变量 `DEEPSEEK_API_KEY`）。
 
 ```bash
-python tools/summarize.py logs/xxx.txt --streamer 柚锖子
-python tools/summarize.py logs/xxx.txt --backend ollama --model qwen3-coder:30b
+python tools/summarize.py                              # 打开图形界面
+python tools/summarize.py logs/a.txt logs/b.txt         # 多选文件合并总结
+python tools/summarize.py --config configs/xiyin.json --date 2026-11-11
 ```
+
+功能：
+
+- 图形界面支持多选文件、拖拽文件（需 `tkinterdnd2`），也可以直接选择 `configs/` 下的直播间按日期总结
+- 自动匹配 `logs/` 里的转写与弹幕、`records/` 里的录像，并汇总当天 MySQL 的礼物/舰长/SC/弹幕数据
+- 自动获取当前大航海名单（总督/提督/舰长）、直播间财富等级和 B 站账号等级，避免把提督误判成普通粉丝；需要使用项目已有的 `.bili_credential.json`
+- 根据核心观众的弹幕语气，输出「沟通风格画像 + 互动话术 + 避雷建议」，帮助主播更好地接住每个人
+- 以「内容运营总监 + 数据增长分析师」的视角输出复盘、风险提示和下播行动清单，语气以鼓励和建议为主
+- 输出 Markdown 到 `reports/`，并同时渲染两张图：
+  - `<主播>_<日期>_<时间>.png`：带 Mermaid 思维导图的完整长图
+  - `<主播>_<日期>_<时间>_摘要.png`：一页速览，适合直接发给主播
+
+常用参数：`--no-db`（不查流水）、`--no-danmaku`（不加入弹幕）、`--no-png`（只出 Markdown）、
+`--no-brief`（不出摘要图）、`--dry-run`（只生成 Prompt）、`--model deepseek-reasoner`（切换模型）。
 
 会议实时英译中（macOS，需要 BlackHole、portaudio 与本地 Qwen）：
 

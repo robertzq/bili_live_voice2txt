@@ -108,6 +108,15 @@ def _medal_fields(medal: Any) -> tuple[Optional[str], Optional[int]]:
     return (None, None)
 
 
+def _guard_level(medal: Any) -> int:
+    """大航海等级：1 总督 / 2 提督 / 3 舰长，0 表示未开通。"""
+    if isinstance(medal, dict):
+        return _to_int(medal.get("guard_level"))
+    if isinstance(medal, (list, tuple)) and len(medal) > 10:
+        return _to_int(medal[10])
+    return 0
+
+
 @dataclass
 class DanmakuEvent:
     kind: str
@@ -119,6 +128,7 @@ class DanmakuEvent:
     medal_name: Optional[str] = None
     medal_level: Optional[int] = None
     user_level: Optional[int] = None
+    guard_level: int = 0
     gift_name: str = ""
     gift_num: int = 0
     price: float = 0.0
@@ -137,33 +147,44 @@ class DanmakuEvent:
         return ""
 
     @property
+    def guard_text(self) -> str:
+        name = GUARD_NAMES.get(self.guard_level)
+        return f"[{name}] " if name else ""
+
+    @property
     def user_text(self) -> str:
         if self.user_level is not None:
-            return f"UL.{self.user_level} {self.username}"
+            return f"直播间Lv.{self.user_level} {self.username}"
         return self.username
 
     def display_text(self) -> str:
         moment = self.timestamp.strftime("%H:%M:%S")
         if self.kind == "danmaku":
-            return f"[{moment}] [弹幕] {self.medal_text}{self.user_text}: {self.content}"
+            return (
+                f"[{moment}] [弹幕] {self.guard_text}{self.medal_text}"
+                f"{self.user_text}: {self.content}"
+            )
         if self.kind == "gift":
             target = f" -> {self.receiver_name}" if self.receiver_name else ""
             return (
-                f"[{moment}] [礼物] {self.medal_text}{self.username} 赠送 "
+                f"[{moment}] [礼物] {self.guard_text}{self.medal_text}{self.username} 赠送 "
                 f"{self.gift_name} x{self.gift_num} (¥{self.total_price:.2f}){target}"
             )
         if self.kind == "guard":
             return (
-                f"[{moment}] [上舰] {self.medal_text}{self.username} 购买 "
+                f"[{moment}] [上舰] {self.guard_text}{self.medal_text}{self.username} 购买 "
                 f"{self.gift_name} x{self.gift_num} (¥{self.total_price:.2f})"
             )
         if self.kind == "super_chat":
             return (
-                f"[{moment}] [SC ¥{self.price:.2f}] {self.medal_text}"
+                f"[{moment}] [SC ¥{self.price:.2f}] {self.guard_text}{self.medal_text}"
                 f"{self.username}: {self.content}"
             )
         if self.kind == "entry":
-            return f"[{moment}] [进场] {self.medal_text}{self.username} {self.content}"
+            return (
+                f"[{moment}] [进场] {self.guard_text}{self.medal_text}"
+                f"{self.username} {self.content}"
+            )
         return f"[{moment}] [{self.kind}] {self.username} {self.content}"
 
 
@@ -201,6 +222,14 @@ def _parse_danmaku(payload: dict, room_id: int) -> Optional[DanmakuEvent]:
     username = str(user[1]) if len(user) > 1 else ""
     medal = info[3] if len(info) > 3 else None
     medal_name, medal_level = _medal_fields(medal)
+    guard_level = _guard_level(medal)
+    if not guard_level and isinstance(info[0], (list, tuple)) and len(info[0]) > 15:
+        extra = info[0][15] if isinstance(info[0][15], dict) else {}
+        user_obj = extra.get("user") if isinstance(extra, dict) else None
+        if isinstance(user_obj, dict):
+            guard_level = _guard_level(user_obj.get("medal"))
+            if not guard_level and isinstance(user_obj.get("guard"), dict):
+                guard_level = _to_int(user_obj["guard"].get("level"))
     user_level = _first_optional_int(
         info[4] if len(info) > 4 else None,
         info[-2] if len(info) > 1 else None,
@@ -219,6 +248,7 @@ def _parse_danmaku(payload: dict, room_id: int) -> Optional[DanmakuEvent]:
         medal_name=medal_name,
         medal_level=medal_level,
         user_level=user_level,
+        guard_level=guard_level,
     )
 
 
@@ -243,6 +273,7 @@ def _parse_gift(payload: dict, room_id: int) -> Optional[DanmakuEvent]:
     if not isinstance(medal_info, dict):
         medal_info = {}
     medal_name, medal_level = _medal_fields(medal_info)
+    guard_level = _guard_level(medal_info)
     medal_target_id = _to_optional_int(
         medal_info.get("anchor_uid") or medal_info.get("target_id")
     )
@@ -257,6 +288,7 @@ def _parse_gift(payload: dict, room_id: int) -> Optional[DanmakuEvent]:
     if medal_mismatch:
         medal_name = None
         medal_level = None
+        guard_level = 0
 
     return DanmakuEvent(
         kind="gift",
@@ -267,6 +299,7 @@ def _parse_gift(payload: dict, room_id: int) -> Optional[DanmakuEvent]:
         content=str(data.get("giftName") or data.get("gift_name") or ""),
         medal_name=medal_name,
         medal_level=medal_level,
+        guard_level=guard_level,
         gift_name=str(data.get("giftName") or data.get("gift_name") or ""),
         gift_num=num,
         price=price,
@@ -482,6 +515,7 @@ def _parse_guard(payload: dict, room_id: int) -> Optional[DanmakuEvent]:
         content=str(gift_name),
         medal_name=medal_name,
         medal_level=medal_level,
+        guard_level=guard_type,
         gift_name=str(gift_name),
         gift_num=num,
         price=price,
@@ -500,6 +534,7 @@ def _parse_super_chat(payload: dict, room_id: int) -> Optional[DanmakuEvent]:
     user_info = data.get("user_info") or {}
     gift = data.get("gift") or {}
     medal_name, medal_level = _medal_fields(data.get("medal_info"))
+    guard_level = _guard_level(data.get("medal_info"))
     price = _to_float(data.get("price"))
     start_time = _to_datetime(data.get("start_time"))
     end_time = _to_datetime(data.get("end_time"), start_time)
@@ -513,6 +548,7 @@ def _parse_super_chat(payload: dict, room_id: int) -> Optional[DanmakuEvent]:
         content=str(data.get("message") or data.get("content") or ""),
         medal_name=medal_name,
         medal_level=medal_level,
+        guard_level=guard_level,
         gift_name=str(gift.get("gift_name") or gift.get("giftName") or "醒目留言"),
         price=price,
         total_price=price,
@@ -534,6 +570,7 @@ def _parse_entry(payload: dict, room_id: int) -> Optional[DanmakuEvent]:
 
     medal = source.get("fans_medal_info") or source.get("fans_medal") or {}
     medal_name, medal_level = _medal_fields(medal)
+    guard_level = _guard_level(medal)
     return DanmakuEvent(
         kind="entry",
         room_id=room_id,
@@ -543,6 +580,7 @@ def _parse_entry(payload: dict, room_id: int) -> Optional[DanmakuEvent]:
         content="进入直播间",
         medal_name=medal_name,
         medal_level=medal_level,
+        guard_level=guard_level,
     )
 
 

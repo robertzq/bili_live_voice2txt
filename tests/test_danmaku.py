@@ -25,6 +25,24 @@ class DanmakuParseTests(unittest.TestCase):
         self.assertEqual(event.user_level, 33)
         self.assertEqual(event.timestamp.year, 2023)
 
+    def test_parse_guard_level_and_display(self):
+        payload = {
+            "info": [
+                [0, 1, 25, 16777215, 1700000000, 0, 0, ""],
+                "你好",
+                [100429252, "阿月月呦", 0, 0, 0, 1000, 1, ""],
+                [36, "青荼山", "青荼吖", 1899306331, 0, "", 0, 0, 0, 0, 2, 1, 1],
+                [21, 0, 0, 0, 0],
+            ]
+        }
+        event = parse_event("DANMU_MSG", payload, 123)
+        self.assertIsNotNone(event)
+        self.assertEqual(event.guard_level, 2)
+        text = event.display_text()
+        self.assertIn("[提督]", text)
+        self.assertIn("直播间Lv.21", text)
+        self.assertNotIn("UL.", text)
+
     def test_parse_gift(self):
         payload = {
             "data": {

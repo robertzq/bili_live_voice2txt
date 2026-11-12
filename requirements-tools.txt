@@ -1,4 +1,8 @@
 requests>=2.31
+markdown>=3.5
+PyMySQL>=1.1
+playwright>=1.40
+tkinterdnd2>=0.4
 # 会议实时翻译还需要 pyaudio：
 #   macOS: brew install portaudio && pip install pyaudio
 #   Windows: pip install pyaudio
