@@ -43,6 +43,11 @@ class DanmakuParseTests(unittest.TestCase):
         self.assertIn("直播间Lv.21", text)
         self.assertNotIn("UL.", text)
 
+        event.wealth_level = 33
+        text = event.display_text()
+        self.assertIn("财富Lv.33", text)
+        self.assertIn("直播间Lv.21", text)
+
     def test_parse_gift(self):
         payload = {
             "data": {

@@ -33,6 +33,7 @@ bili-whisper/
 │   ├── bili_auth.py       # B 站凭证 / 扫码登录
 │   ├── danmaku.py         # 弹幕协议、事件解析、日志
 │   ├── database.py        # MySQL 连接与入库
+│   ├── live_profile.py    # 直播间财富等级/大航海身份查询
 │   ├── pipeline.py        # 音频 + 弹幕流水线
 │   └── gui.py             # Tkinter 界面
 ├── configs/               # 直播间配置
@@ -156,6 +157,7 @@ python run.py --autostart                 # 启动后自动开始监听默认配
 - 切片：`records/Clip_<主播>_<时分秒>_from_<起始秒>s.mp4`
 - 转写日志：`logs/<主播>_<room>_log_<ts>.txt`
 - 弹幕日志：`logs/<主播>_<room>_danmaku_<ts>.txt`
+  - 新日志会显示 `[提督]/[舰长]` 大航海身份、粉丝牌等级、财富等级和直播间等级；财富等级通过 B 站接口补齐
 
 ## 弹幕数据库表
 

@@ -14,6 +14,7 @@ from typing import Any, Callable, Optional
 
 from .bili_auth import configure_bilibili_client, load_credential
 from .database import DanmakuStore
+from .live_profile import LiveProfileClient
 
 _STOP = object()
 
@@ -129,6 +130,7 @@ class DanmakuEvent:
     medal_level: Optional[int] = None
     user_level: Optional[int] = None
     guard_level: int = 0
+    wealth_level: Optional[int] = None
     gift_name: str = ""
     gift_num: int = 0
     price: float = 0.0
@@ -152,10 +154,20 @@ class DanmakuEvent:
         return f"[{name}] " if name else ""
 
     @property
+    def wealth_text(self) -> str:
+        if self.wealth_level is None:
+            return ""
+        return f"财富Lv.{self.wealth_level} "
+
+    @property
     def user_text(self) -> str:
+        parts = []
+        if self.wealth_level is not None:
+            parts.append(f"财富Lv.{self.wealth_level}")
         if self.user_level is not None:
-            return f"直播间Lv.{self.user_level} {self.username}"
-        return self.username
+            parts.append(f"直播间Lv.{self.user_level}")
+        prefix = " · ".join(parts)
+        return f"{prefix} {self.username}" if prefix else self.username
 
     def display_text(self) -> str:
         moment = self.timestamp.strftime("%H:%M:%S")
@@ -167,7 +179,8 @@ class DanmakuEvent:
         if self.kind == "gift":
             target = f" -> {self.receiver_name}" if self.receiver_name else ""
             return (
-                f"[{moment}] [礼物] {self.guard_text}{self.medal_text}{self.username} 赠送 "
+                f"[{moment}] [礼物] {self.guard_text}{self.medal_text}"
+                f"{self.wealth_text}{self.username} 赠送 "
                 f"{self.gift_name} x{self.gift_num} (¥{self.total_price:.2f}){target}"
             )
         if self.kind == "guard":
@@ -178,12 +191,12 @@ class DanmakuEvent:
         if self.kind == "super_chat":
             return (
                 f"[{moment}] [SC ¥{self.price:.2f}] {self.guard_text}{self.medal_text}"
-                f"{self.username}: {self.content}"
+                f"{self.wealth_text}{self.username}: {self.content}"
             )
         if self.kind == "entry":
             return (
                 f"[{moment}] [进场] {self.guard_text}{self.medal_text}"
-                f"{self.username} {self.content}"
+                f"{self.wealth_text}{self.username} {self.content}"
             )
         return f"[{moment}] [{self.kind}] {self.username} {self.content}"
 
@@ -834,11 +847,14 @@ class DanmakuRecorder:
         store: Optional[DanmakuStore] = None,
         on_display: Optional[Callable[[DanmakuEvent], None]] = None,
         on_message: Optional[Callable[[str], None]] = None,
+        enrich_profiles: bool = True,
     ) -> None:
         self.log_path = Path(log_path)
         self.store = store
         self.on_display = on_display or (lambda _event: None)
         self.on_message = on_message or (lambda _msg: None)
+        self.enrich_profiles = enrich_profiles
+        self._profile_client: Optional[LiveProfileClient] = None
         self._db_error_reported = False
         self._file = None
         try:
@@ -847,7 +863,30 @@ class DanmakuRecorder:
         except OSError as exc:
             self.on_message(f"弹幕日志打开失败: {exc}")
 
+    def _enrich_profile(self, event: DanmakuEvent) -> None:
+        if not self.enrich_profiles or event.uid <= 0:
+            return
+        if event.wealth_level is not None:
+            return
+        if event.kind not in {"danmaku", "gift", "super_chat", "guard"}:
+            return
+        if event.kind == "danmaku" and not event.medal_name and not event.guard_level:
+            return
+        try:
+            if self._profile_client is None:
+                self._profile_client = LiveProfileClient(event.room_id)
+            profile = self._profile_client.get(event.uid)
+            if profile is None:
+                return
+            if event.wealth_level is None:
+                event.wealth_level = profile.wealth_level
+            if not event.guard_level and profile.guard_level:
+                event.guard_level = profile.guard_level
+        except Exception:  # noqa: BLE001 - 资料查询失败不能影响弹幕展示
+            pass
+
     def handle(self, event: DanmakuEvent) -> None:
+        self._enrich_profile(event)
         line = event.display_text()
         if self._file is not None:
             try:

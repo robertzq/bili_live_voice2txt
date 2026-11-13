@@ -4,6 +4,7 @@ from pathlib import Path
 
 from bililive.bili_auth import parse_cookie_string
 from bililive.danmaku import DanmakuEvent, DanmakuRecorder
+from bililive.live_profile import LiveUserProfile
 import datetime as dt
 
 
@@ -54,6 +55,7 @@ class RecorderTests(unittest.TestCase):
             store=store,
             on_display=displayed.append,
             on_message=messages.append,
+            enrich_profiles=False,
         )
         event = DanmakuEvent(
             kind="danmaku",
@@ -71,6 +73,42 @@ class RecorderTests(unittest.TestCase):
         self.assertIn("你好", log_path.read_text(encoding="utf-8"))
         self.assertEqual(messages, [])
 
+    def test_recorder_enriches_wealth_level(self):
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        log_path = Path(temp_dir.name) / "danmaku.txt"
+
+        class FakeProfileClient:
+            def get(self, uid):
+                return LiveUserProfile(
+                    uid=uid,
+                    username="alice",
+                    wealth_level=33,
+                    guard_text="大航海提督",
+                )
+
+        recorder = DanmakuRecorder(log_path, enrich_profiles=True)
+        recorder._profile_client = FakeProfileClient()
+        event = DanmakuEvent(
+            kind="danmaku",
+            room_id=1,
+            timestamp=dt.datetime(2024, 1, 1, 12, 0, 0),
+            uid=42,
+            username="alice",
+            content="你好",
+            medal_name="牌子",
+            medal_level=36,
+            user_level=21,
+        )
+        recorder.handle(event)
+        recorder.close()
+
+        self.assertEqual(event.wealth_level, 33)
+        self.assertEqual(event.guard_level, 2)
+        text = log_path.read_text(encoding="utf-8")
+        self.assertIn("财富Lv.33", text)
+        self.assertIn("直播间Lv.21", text)
+
     def test_recorder_reports_db_error_once(self):
         temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(temp_dir.cleanup)
@@ -80,6 +118,7 @@ class RecorderTests(unittest.TestCase):
             Path(temp_dir.name) / "danmaku.txt",
             store=store,
             on_message=messages.append,
+            enrich_profiles=False,
         )
         event = DanmakuEvent(
             kind="gift",
