@@ -196,11 +196,12 @@ python tools/summarize.py --config configs/xiyin.json --date 2026-11-11
 - 根据核心观众的弹幕语气，输出「沟通风格画像 + 互动话术 + 避雷建议」，帮助主播更好地接住每个人
 - 以「内容运营总监 + 数据增长分析师」的视角输出复盘、风险提示和下播行动清单，语气以鼓励和建议为主
 - 输出 Markdown 到 `reports/`，并同时渲染两张图：
-  - `<主播>_<日期>_<时间>.png`：带 Mermaid 思维导图的完整长图
+  - `<主播>_<日期>_<时间>.png`：四栏横向「报纸版」完整图，带 Mermaid 思维导图，文字更大、不会太长
   - `<主播>_<日期>_<时间>_摘要.png`：一页速览，适合直接发给主播
 
 常用参数：`--no-db`（不查流水）、`--no-danmaku`（不加入弹幕）、`--no-png`（只出 Markdown）、
-`--no-brief`（不出摘要图）、`--dry-run`（只生成 Prompt）、`--model deepseek-reasoner`（切换模型）。
+`--no-brief`（不出摘要图）、`--full-layout single`（完整图改回单栏长图）、
+`--columns 3`（调整报纸版栏数）、`--dry-run`（只生成 Prompt）、`--model deepseek-reasoner`（切换模型）。
 
 会议实时英译中（macOS，需要 BlackHole、portaudio 与本地 Qwen）：
 

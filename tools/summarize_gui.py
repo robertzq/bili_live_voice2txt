@@ -77,6 +77,10 @@ class SummarizeApp:
         )
         self.var_png = tk.BooleanVar(value=True)
         tk.Checkbutton(options, text="渲染完整长图", variable=self.var_png).pack(side="left")
+        self.var_newspaper = tk.BooleanVar(value=True)
+        tk.Checkbutton(
+            options, text="四栏报纸版式", variable=self.var_newspaper
+        ).pack(side="left", padx=(8, 0))
         self.var_brief = tk.BooleanVar(value=True)
         tk.Checkbutton(
             options, text="同时生成一页速览图", variable=self.var_brief
@@ -390,7 +394,15 @@ class SummarizeApp:
 
         self.worker = threading.Thread(
             target=self._worker,
-            args=(mode, files, configs, day, options, self.var_png.get()),
+            args=(
+                mode,
+                files,
+                configs,
+                day,
+                options,
+                self.var_png.get(),
+                "newspaper" if self.var_newspaper.get() else "single",
+            ),
             daemon=True,
         )
         self.worker.start()
@@ -400,7 +412,16 @@ class SummarizeApp:
         self.status_var.set("正在取消...")
         self._append_log("\n⛔ 收到取消请求，将在当前请求结束后停止。\n")
 
-    def _worker(self, mode, files, configs, day, options, render_png: bool) -> None:
+    def _worker(
+        self,
+        mode,
+        files,
+        configs,
+        day,
+        options,
+        render_png: bool,
+        full_layout: str,
+    ) -> None:
         try:
             if mode == 0:
                 report = self.core.summarize_manual(
@@ -415,7 +436,9 @@ class SummarizeApp:
                 if not streamer:
                     streamer = "主播"
                 day_label = day.isoformat() if day else self._infer_day_label(files)
-                self._finish(report, streamer, day_label, options, render_png)
+                self._finish(
+                    report, streamer, day_label, options, render_png, full_layout
+                )
             else:
                 for config in configs:
                     if self.cancel_event.is_set():
@@ -433,7 +456,14 @@ class SummarizeApp:
                         continue
                     streamer = config.streamer_name or config.room_id
                     assert day is not None
-                    self._finish(report, streamer, day.isoformat(), options, render_png)
+                    self._finish(
+                        report,
+                        streamer,
+                        day.isoformat(),
+                        options,
+                        render_png,
+                        full_layout,
+                    )
         except self.core.Cancelled:
             self.queue.put(("progress", "\n已取消。"))
         except self.core.SummarizeError as exc:
@@ -455,7 +485,13 @@ class SummarizeApp:
         return days[0].isoformat() if len(unique) == 1 else "多日合集"
 
     def _finish(
-        self, report: str, streamer: str, day_label: str, options, render_png: bool
+        self,
+        report: str,
+        streamer: str,
+        day_label: str,
+        options,
+        render_png: bool,
+        full_layout: str,
     ) -> None:
         brief_markdown = ""
         if render_png and options.include_brief:
@@ -472,6 +508,7 @@ class SummarizeApp:
             day_label=day_label,
             render_png=render_png,
             brief_markdown=brief_markdown,
+            full_layout=full_layout,
             progress=lambda message: self.queue.put(("progress", message)),
         )
         self.queue.put(

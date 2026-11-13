@@ -1642,6 +1642,8 @@ def save_report(
     md_path: Optional[Path] = None,
     render_png: bool = True,
     brief_markdown: str = "",
+    full_layout: str = "newspaper",
+    full_columns: int = 4,
     progress: Optional[Callable[[str], None]] = None,
 ) -> SavedReport:
     if md_path:
@@ -1681,6 +1683,8 @@ def save_report(
             markdown_text,
             report_dir / f"{base}.png",
             title=f"{streamer} {day_label} 直播复盘",
+            layout=full_layout,
+            columns=full_columns,
         )
     except RenderError as exc:
         if progress:
@@ -1843,6 +1847,8 @@ def run_cli(args: argparse.Namespace) -> int:
             md_path=Path(args.out) if args.out else None,
             render_png=not args.no_png,
             brief_markdown=brief_markdown,
+            full_layout=args.full_layout,
+            full_columns=args.columns,
             progress=options.progress,
         )
         print(f"📄 Markdown: {saved.markdown}", file=sys.stderr)
@@ -1888,6 +1894,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--out", type=Path, default=None, help="Markdown 输出路径")
     parser.add_argument("--no-png", action="store_true", help="不渲染图片")
     parser.add_argument("--no-brief", action="store_true", help="不生成一页速览摘要图")
+    parser.add_argument(
+        "--full-layout",
+        choices=["newspaper", "single"],
+        default="newspaper",
+        help="完整长图版式：newspaper=四栏横向（默认），single=单栏长图",
+    )
+    parser.add_argument("--columns", type=int, default=4, help="四栏版式的栏数")
     parser.add_argument("--no-db", action="store_true", help="不查询数据库流水")
     parser.add_argument("--no-danmaku", action="store_true", help="不加入弹幕")
     parser.add_argument("--dry-run", action="store_true", help="只生成 Prompt，不调用模型")

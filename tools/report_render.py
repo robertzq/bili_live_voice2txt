@@ -231,6 +231,62 @@ pre code { background: transparent; border: none; color: inherit; padding: 0; }
   font-size: 14px;
 }
 .mermaid-wrap svg { max-width: 100%; height: auto; }
+.page.layout-newspaper {
+  max-width: none;
+  padding: 42px 46px 30px;
+}
+.layout-newspaper .report-body {
+  column-gap: 32px;
+  column-rule: 1px solid #dbe3ef;
+  font-size: 17px;
+  line-height: 1.8;
+}
+.layout-newspaper .report-body > h1:first-child {
+  column-span: all;
+  margin: 0 0 16px;
+  font-size: 31px;
+}
+.layout-newspaper .report-body > blockquote:first-of-type {
+  column-span: all;
+  margin-top: 0;
+}
+.layout-newspaper .report-body h2 {
+  break-after: avoid;
+  margin-top: 26px;
+  font-size: 21px;
+}
+.layout-newspaper .report-body h3 {
+  break-after: avoid;
+  font-size: 17px;
+}
+.layout-newspaper .report-body table,
+.layout-newspaper .report-body pre,
+.layout-newspaper .report-body blockquote,
+.layout-newspaper .report-body .mermaid-wrap {
+  break-inside: avoid;
+}
+.layout-newspaper .report-body table {
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.layout-newspaper .report-body th,
+.layout-newspaper .report-body td {
+  padding: 6px 7px;
+}
+.layout-newspaper .report-body th {
+  white-space: normal;
+}
+.layout-newspaper .report-body .mermaid-wrap {
+  column-span: all;
+  padding: 16px;
+  margin-top: 24px;
+}
+.layout-newspaper .report-body .mermaid-wrap pre.mermaid {
+  font-size: 12px;
+}
+.layout-newspaper .footer {
+  margin-top: 24px;
+}
 .footer {
   margin-top: 44px;
   padding-top: 18px;
@@ -242,7 +298,13 @@ pre code { background: transparent; border: none; color: inherit; padding: 0; }
 """
 
 
-def _wrap_document(body_html: str, title: str, mermaid_js: str | None) -> str:
+def _wrap_document(
+    body_html: str,
+    title: str,
+    mermaid_js: str | None,
+    layout: str = "single",
+    columns: int = 4,
+) -> str:
     generated = datetime.now().strftime("%Y-%m-%d %H:%M")
     if mermaid_js:
         mermaid = f"""
@@ -281,6 +343,9 @@ def _wrap_document(body_html: str, title: str, mermaid_js: str | None) -> str:
         mermaid = "<script>window.__mermaidDone = true;</script>"
 
     safe_title = html.escape(title or "直播复盘报告")
+    newspaper = layout == "newspaper"
+    page_class = "page layout-newspaper" if newspaper else "page"
+    body_style = f' style="column-count: {max(2, columns)};"' if newspaper else ""
     return f"""<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -290,8 +355,10 @@ def _wrap_document(body_html: str, title: str, mermaid_js: str | None) -> str:
 <style>{CSS}</style>
 </head>
 <body>
-<main class="page">
+<main class="{page_class}">
+<div class="report-body"{body_style}>
 {body_html}
+</div>
 <div class="footer">由 DeepSeek × bili-whisper 自动生成 · {generated}</div>
 </main>
 {mermaid}
@@ -320,22 +387,34 @@ def _launch_browser(playwright):
     )
 
 
-def build_html(markdown_text: str, title: str = "") -> str:
+def build_html(
+    markdown_text: str,
+    title: str = "",
+    layout: str = "single",
+    columns: int = 4,
+) -> str:
     text, mermaid_blocks = _extract_mermaid(markdown_text)
     body = _markdown_to_html(text)
     body = _inject_mermaid(body, mermaid_blocks)
     mermaid_js = _ensure_mermaid_js() if mermaid_blocks else None
-    return _wrap_document(body, title, mermaid_js)
+    return _wrap_document(body, title, mermaid_js, layout=layout, columns=columns)
 
 
 def render_markdown_to_png(
     markdown_text: str,
     out_path: str | Path,
     title: str = "",
-    width: int = 1080,
+    width: int | None = None,
+    layout: str = "single",
+    columns: int = 4,
+    scale: float | None = None,
 ) -> Path:
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    if width is None:
+        width = 2400 if layout == "newspaper" else 1080
+    if scale is None:
+        scale = 1.5 if layout == "newspaper" else 2.0
 
     try:
         from playwright.sync_api import sync_playwright
@@ -345,14 +424,14 @@ def render_markdown_to_png(
             "然后执行: python -m playwright install chromium"
         ) from exc
 
-    html_doc = build_html(markdown_text, title)
+    html_doc = build_html(markdown_text, title, layout=layout, columns=columns)
 
     with sync_playwright() as playwright:
         browser = _launch_browser(playwright)
         try:
             page = browser.new_page(
                 viewport={"width": width, "height": 900},
-                device_scale_factor=2,
+                device_scale_factor=scale,
             )
             page.set_content(html_doc, wait_until="load", timeout=60_000)
             try:
@@ -376,6 +455,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("markdown", type=Path, help="Markdown 文件")
     parser.add_argument("-o", "--out", type=Path, default=None, help="输出 PNG")
     parser.add_argument("--title", default="", help="HTML 标题")
+    parser.add_argument(
+        "--layout",
+        choices=["newspaper", "single"],
+        default="newspaper",
+        help="newspaper=四栏横向版式，single=单栏长图",
+    )
+    parser.add_argument("--columns", type=int, default=4, help="报纸版式的栏数")
     args = parser.parse_args(argv)
 
     out = args.out or args.markdown.with_suffix(".png")
@@ -384,6 +470,8 @@ def main(argv: list[str] | None = None) -> int:
             args.markdown.read_text(encoding="utf-8"),
             out,
             title=args.title or args.markdown.stem,
+            layout=args.layout,
+            columns=args.columns,
         )
     except (OSError, RenderError) as exc:
         print(f"渲染失败: {exc}", file=sys.stderr)
