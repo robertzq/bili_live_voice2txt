@@ -477,7 +477,12 @@ def find_danmaku_for_day(room_id: str, day: date) -> list[LogEntry]:
     return found
 
 
-def find_records(room_id: str, day: date) -> RecordInfo:
+def find_records(
+    room_id: str,
+    day: date,
+    start_dt: Optional[datetime] = None,
+    end_dt: Optional[datetime] = None,
+) -> RecordInfo:
     info = RecordInfo()
     if not RECORD_DIR.is_dir():
         return info
@@ -486,7 +491,11 @@ def find_records(room_id: str, day: date) -> RecordInfo:
         if not match:
             continue
         ts = int(match.group("ts"))
-        if datetime.fromtimestamp(ts).date() != day:
+        rec_start = datetime.fromtimestamp(ts)
+        if start_dt is not None and end_dt is not None:
+            if not (start_dt <= rec_start < end_dt):
+                continue
+        elif rec_start.date() != day:
             continue
         info.paths.append(path)
         try:
@@ -573,6 +582,24 @@ def _clean_transcript(text: str) -> str:
     return "\n".join(lines)
 
 
+_LOG_LINE_TIME = re.compile(r"^\[(\d{2}):(\d{2}):(\d{2})\]")
+
+
+def _filter_log_lines(text: str, start_time: time, end_time: time) -> str:
+    """按 HH:MM:SS 过滤日志行，用于总结某一场/某个时段。"""
+    kept: list[str] = []
+    for line in text.splitlines():
+        match = _LOG_LINE_TIME.match(line)
+        if match:
+            moment = time(
+                int(match.group(1)), int(match.group(2)), int(match.group(3))
+            )
+            if moment < start_time or moment > end_time:
+                continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
 def _sample_text(text: str, limit: int) -> str:
     lines = [line for line in text.splitlines() if line.strip()]
     total = sum(len(line) + 1 for line in lines)
@@ -655,7 +682,11 @@ def _connect_db():
 
 
 def collect_metrics(
-    room_ids: list[str], day: date, progress: Optional[Callable[[str], None]] = None
+    room_ids: list[str],
+    day: date,
+    progress: Optional[Callable[[str], None]] = None,
+    start_dt: Optional[datetime] = None,
+    end_dt: Optional[datetime] = None,
 ) -> str:
     if not room_ids:
         return "### 经营数据\n\n本期没有可匹配的房间号，未查询数据库。\n"
@@ -671,8 +702,8 @@ def collect_metrics(
     for room_id in room_ids:
         guard_users.extend(fetch_guard_users(room_id, progress))
 
-    day_start = datetime.combine(day, time.min)
-    day_end = day_start + timedelta(days=1)
+    day_start = start_dt or datetime.combine(day, time.min)
+    day_end = end_dt or (day_start + timedelta(days=1))
     placeholders = ", ".join(["%s"] * len(room_ids))
     room_params = tuple(room_ids)
 
@@ -725,13 +756,22 @@ def collect_metrics(
             gift_params,
         ) or (0, 0)
 
+        try:
+            db_now, db_utc = one("SELECT NOW(), UTC_TIMESTAMP()")
+            db_offset = db_now - db_utc
+        except Exception:  # noqa: BLE001 - 时间转换失败时退回原窗口
+            db_offset = timedelta(0)
+        local_offset = datetime.now().astimezone().utcoffset() or timedelta(0)
+        entry_shift = local_offset - db_offset
+        entry_start = day_start - entry_shift
+        entry_end = day_end - entry_shift
         entry_count = one(
             f"""
             SELECT COUNT(*) FROM entry_user_records
             WHERE room_id IN ({placeholders})
               AND created_at >= %s AND created_at < %s
             """,
-            room_params + (day_start, day_end),
+            room_params + (entry_start, entry_end),
         )
         entry_count = int((entry_count or (0,))[0])
 
@@ -1455,13 +1495,19 @@ def call_chat(prompt: str, options: SummarizeOptions) -> str:
 
 
 def _collect_danmaku_text(
-    danmaku_entries: list[LogEntry], options: SummarizeOptions
+    danmaku_entries: list[LogEntry],
+    options: SummarizeOptions,
+    window: Optional[tuple[datetime, datetime]] = None,
 ) -> str:
     if not options.include_danmaku or not danmaku_entries:
         return ""
     parts: list[str] = []
     for entry in danmaku_entries:
         text = _read_text(entry.path)
+        if window is not None:
+            text = _filter_log_lines(text, window[0].time(), window[1].time())
+        if not text.strip():
+            continue
         if len(danmaku_entries) > 1:
             parts.append(f"【{entry.path.name}】\n{text}")
         else:
@@ -1470,10 +1516,17 @@ def _collect_danmaku_text(
     return _sample_text(combined, DANMAKU_CHAR_LIMIT)
 
 
-def _combine_transcripts(entries: list[LogEntry]) -> str:
+def _combine_transcripts(
+    entries: list[LogEntry],
+    window: Optional[tuple[datetime, datetime]] = None,
+) -> str:
     parts: list[str] = []
     for entry in sorted(entries, key=lambda item: item.ts):
         text = _clean_transcript(_read_text(entry.path))
+        if window is not None:
+            text = _filter_log_lines(text, window[0].time(), window[1].time())
+        if not text.strip():
+            continue
         if len(entries) > 1:
             label = datetime.fromtimestamp(entry.ts).strftime("%Y-%m-%d %H:%M")
             parts.append(f"### 录播片段 {label}（{entry.path.name}）\n{text}")
@@ -1489,14 +1542,15 @@ def _generate(
     day: Optional[date],
     room_ids: list[str],
     options: SummarizeOptions,
+    window: Optional[tuple[datetime, datetime]] = None,
 ) -> str:
     if not transcripts:
         raise NoLogError("没有找到可总结的语音转写日志。")
 
     _progress(options, f"📖 正在读取 {len(transcripts)} 个转写文件...")
-    transcript_text = _combine_transcripts(transcripts)
+    transcript_text = _combine_transcripts(transcripts, window)
     if not transcript_text.strip():
-        raise NoLogError("转写日志内容为空。")
+        raise NoLogError("该时段内没有可总结的转写内容。")
 
     original_chars = len(transcript_text)
     if original_chars > options.max_chars:
@@ -1509,12 +1563,18 @@ def _generate(
     else:
         _progress(options, f"📖 转写共 {original_chars:,} 字，长度正常。")
 
-    danmaku_text = _collect_danmaku_text(danmaku_entries, options)
+    danmaku_text = _collect_danmaku_text(danmaku_entries, options, window)
     if danmaku_text:
         _progress(options, f"💬 已加入 {len(danmaku_entries)} 个弹幕文件。")
 
     if options.include_db and day is not None:
-        metrics_markdown = collect_metrics(room_ids, day, progress=options.progress)
+        metrics_markdown = collect_metrics(
+            room_ids,
+            day,
+            progress=options.progress,
+            start_dt=window[0] if window else None,
+            end_dt=window[1] if window else None,
+        )
     elif not options.include_db:
         metrics_markdown = "### 经营数据\n\n（本次已关闭数据库统计）\n"
     else:
@@ -1523,7 +1583,12 @@ def _generate(
     if room_ids and day:
         records_info = RecordInfo()
         for room_id in room_ids:
-            info = find_records(room_id, day)
+            info = find_records(
+                room_id,
+                day,
+                start_dt=window[0] if window else None,
+                end_dt=window[1] if window else None,
+            )
             records_info.paths.extend(info.paths)
             records_info.total_bytes += info.total_bytes
             records_info.total_seconds += info.total_seconds
@@ -1531,7 +1596,12 @@ def _generate(
     else:
         records_markdown = "（未匹配到录像文件）"
 
-    date_label = day.isoformat() if day else "多日合集"
+    if day is None:
+        date_label = "多日合集"
+    elif window:
+        date_label = f"{day.isoformat()} {window[0]:%H:%M}-{window[1]:%H:%M}"
+    else:
+        date_label = day.isoformat()
     prompt = build_analyst_prompt(
         streamer=streamer or "主播",
         date_label=date_label,
@@ -1556,6 +1626,8 @@ def summarize_manual(
     streamer: str = "",
     day: Optional[date] = None,
     options: Optional[SummarizeOptions] = None,
+    start_dt: Optional[datetime] = None,
+    end_dt: Optional[datetime] = None,
 ) -> str:
     options = options or SummarizeOptions()
     entries: list[LogEntry] = []
@@ -1608,13 +1680,24 @@ def summarize_manual(
         danmaku_entries.sort(key=lambda item: item.ts)
 
     room_ids = sorted({entry.room_id for entry in entries if entry.room_id})
-    return _generate(transcripts, danmaku_entries, streamer, day, room_ids, options)
+    window = (start_dt, end_dt) if start_dt and end_dt else None
+    return _generate(
+        transcripts,
+        danmaku_entries,
+        streamer,
+        day,
+        room_ids,
+        options,
+        window=window,
+    )
 
 
 def summarize_room_day(
     config: RoomConfig,
     day: date,
     options: Optional[SummarizeOptions] = None,
+    start_dt: Optional[datetime] = None,
+    end_dt: Optional[datetime] = None,
 ) -> str:
     options = options or SummarizeOptions()
     transcripts, danmaku_entries = find_daily_sources(config, day)
@@ -1624,6 +1707,7 @@ def summarize_room_day(
         )
     if not options.include_danmaku:
         danmaku_entries = []
+    window = (start_dt, end_dt) if start_dt and end_dt else None
     return _generate(
         transcripts=transcripts,
         danmaku_entries=danmaku_entries,
@@ -1631,6 +1715,7 @@ def summarize_room_day(
         day=day,
         room_ids=[config.room_id],
         options=options,
+        window=window,
     )
 
 
@@ -1722,6 +1807,16 @@ def parse_day(value: str) -> date:
     raise argparse.ArgumentTypeError(f"无法识别日期: {value}（示例：2026-11-12）")
 
 
+def parse_clock(value: str) -> time:
+    value = value.strip()
+    for fmt in ("%H:%M:%S", "%H:%M"):
+        try:
+            return datetime.strptime(value, fmt).time()
+        except ValueError:
+            continue
+    raise argparse.ArgumentTypeError(f"无法识别时间: {value}（示例：11:20 或 14:06）")
+
+
 def _load_configs(paths: list[str]) -> list[RoomConfig]:
     configs: list[RoomConfig] = []
     for raw in paths:
@@ -1774,25 +1869,56 @@ def run_cli(args: argparse.Namespace) -> int:
                 if entry is not None
             ]
             day = max(set(days), key=days.count) if days else None
+        start_dt = end_dt = None
+        if args.start or args.end:
+            if day is None:
+                print("⚠️ 使用 --start/--end 时需要能确定日期，请加 --date。", file=sys.stderr)
+            else:
+                start_dt = datetime.combine(day, args.start or time.min)
+                end_dt = datetime.combine(day, args.end or time.max)
+                if start_dt >= end_dt:
+                    print("❌ --start 必须早于 --end。", file=sys.stderr)
+                    return 2
         day_label = day.isoformat() if day else "多日合集"
+        if start_dt and end_dt:
+            day_label += f"_{start_dt:%H%M}-{end_dt:%H%M}"
         tasks.append(
             (
                 streamer,
                 day_label,
-                lambda files=files, streamer=streamer, day=day: summarize_manual(
-                    files, streamer=streamer, day=day, options=options
+                lambda files=files, streamer=streamer, day=day, start_dt=start_dt, end_dt=end_dt: summarize_manual(
+                    files,
+                    streamer=streamer,
+                    day=day,
+                    options=options,
+                    start_dt=start_dt,
+                    end_dt=end_dt,
                 ),
             )
         )
     elif configs:
         for config in configs:
             day = args.date or date.today()
+            start_dt = end_dt = None
+            if args.start or args.end:
+                start_dt = datetime.combine(day, args.start or time.min)
+                end_dt = datetime.combine(day, args.end or time.max)
+                if start_dt >= end_dt:
+                    print("❌ --start 必须早于 --end。", file=sys.stderr)
+                    return 2
+            day_label = day.isoformat()
+            if start_dt and end_dt:
+                day_label += f"_{start_dt:%H%M}-{end_dt:%H%M}"
             tasks.append(
                 (
                     config.streamer_name or config.room_id,
-                    day.isoformat(),
-                    lambda config=config, day=day: summarize_room_day(
-                        config, day, options=options
+                    day_label,
+                    lambda config=config, day=day, start_dt=start_dt, end_dt=end_dt: summarize_room_day(
+                        config,
+                        day,
+                        options=options,
+                        start_dt=start_dt,
+                        end_dt=end_dt,
                     ),
                 )
             )
@@ -1880,6 +2006,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="直播间配置（可重复），例如 configs/xiyin.json",
     )
     parser.add_argument("--date", type=parse_day, default=None, help="按天总结的日期，默认今天")
+    parser.add_argument(
+        "--start",
+        type=parse_clock,
+        default=None,
+        help="只总结该时间之后，格式 HH:MM 或 HH:MM:SS（配合 --date）",
+    )
+    parser.add_argument(
+        "--end",
+        type=parse_clock,
+        default=None,
+        help="只总结到该时间，格式 HH:MM 或 HH:MM:SS（配合 --date）",
+    )
     parser.add_argument("--streamer", default="", help="主播名（手动选文件时可选）")
     parser.add_argument(
         "--backend",
